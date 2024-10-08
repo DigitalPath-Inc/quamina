@@ -1,13 +1,16 @@
 # Quamina
 
-[![Tests](https://github.com/timbray/quamina/actions/workflows/go-unit-tests.yaml/badge.svg)](https://github.com/timbray/quamina/actions/workflows/go-unit-tests.yaml)
-[![Latest Release](https://img.shields.io/github/release/timbray/quamina.svg?logo=github&style=flat-square)](https://github.com/timbray/quamina/releases/latest)
-[![codecov](https://codecov.io/gh/timbray/quamina/branch/main/graph/badge.svg?token=TC7MW723JO)](https://codecov.io/gh/timbray/quamina)
-[![Go Report Card](https://goreportcard.com/badge/quamina.net/go/quamina)](https://goreportcard.com/report/quamina.net/go/quamina)
-[![timbray/quamina](https://img.shields.io/github/go-mod/go-version/timbray/quamina)](https://github.com/timbray/quamina)
-[![Go Reference](https://pkg.go.dev/badge/quamina.net/go/quamina.svg)](https://pkg.go.dev/quamina.net/go/quamina)
-[![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
-[![0 dependencies!](https://0dependencies.dev/0dependencies.svg)](https://0dependencies.dev)
+## ALERTWest Fork
+This repo is a fork of the original Quamina repo, with the goal of improving pattern compilation performance. The main difference is in [trie.go](trie.go), which uses a trie to first assemble the structure, then converts that to a `coreMatcher`.
+
+### `WithPatterns` vs `AddPattern`
+
+The standard Quamina library uses `(Quamina).AddPattern` to add patterns to the matcher. The handling only adds a single pattern at a time, and does so via creating a new matching structure and merging it with the existing one.
+
+This fork adds a `WithPatterns` option to `New`, which allows for bulk pattern addition. This is done by first creating a `map[X]string` and passing that to `New` via `WithPatterns`. The `New` function will then create a `coreMatcher` directly, avoiding the need to merge multiple structures. This is very fast for a large number of patterns/matching values, on a low number of fields, but has lots of opportunities to be improved. 
+
+> [!IMPORTANT]
+> `WithPatterns` currently only supports exact string pattern types.
 
 ### Fast pattern-matching library
 
