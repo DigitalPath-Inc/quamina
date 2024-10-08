@@ -13,6 +13,7 @@ type Quamina struct {
 	matcher            matcher
 	mediaTypeSpecified bool
 	deletionSpecified  bool
+	patterns           map[X]string
 }
 
 // Option is an interface type used in Quamina's New API to pass in options. By convention, Option names
@@ -90,7 +91,19 @@ func WithPatternStorage(ps LivePatternsState) Option {
 	}
 }
 
-// New returns a new Quamina instance. Consult the APIs beginning with “With” for the options
+// WithPatterns provides a map of patterns to be added to the Quamina instance upon creation.
+// This option allows for bulk pattern addition during initialization.
+func WithPatterns(patterns map[X]string) Option {
+	return func(q *Quamina) error {
+		if q.patterns != nil {
+			return errors.New("patterns already specified")
+		}
+		q.patterns = patterns
+		return nil
+	}
+}
+
+// New returns a new Quamina instance. Consult the APIs beginning with "With" for the options
 // that may be used to configure the new instance.
 func New(opts ...Option) (*Quamina, error) {
 	var q Quamina
@@ -102,7 +115,13 @@ func New(opts ...Option) (*Quamina, error) {
 	if (!q.mediaTypeSpecified) && (q.flattener == nil) {
 		q.flattener = newJSONFlattener()
 	}
-	if !q.deletionSpecified {
+	if q.patterns != nil {
+		var err error
+		q.matcher, err = MatcherFromPatterns(q.patterns)
+		if err != nil {
+			return nil, err
+		}
+	} else if !q.deletionSpecified {
 		q.matcher = newCoreMatcher()
 	}
 	return &q, nil
@@ -136,7 +155,7 @@ func (q *Quamina) DeletePatterns(x X) error {
 }
 
 // MatchesForEvent returns a slice of X values which identify patterns that have previously been added to this
-// Quamina instance and which “match” the event in the sense described in README. The matches slice may be empty
+// Quamina instance and which "match" the event in the sense described in README. The matches slice may be empty
 // if no patterns match. error can be returned in case that the event is not a valid JSON object or contains
 // invalid UTF-8 byte sequences.
 func (q *Quamina) MatchesForEvent(event []byte) ([]X, error) {
