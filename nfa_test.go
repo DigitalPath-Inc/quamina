@@ -1,7 +1,9 @@
 package quamina
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 	"unsafe"
 )
@@ -80,5 +82,25 @@ func TestFocusedMerge(t *testing.T) {
 		}
 		faStats(merged, &s)
 		fmt.Println(s.stStats())
+	}
+}
+
+func unravelFaNext(buf *bytes.Buffer, faNext *faNext, depth int) {
+	indent := strings.Repeat("  ", depth)
+	buf.WriteString(fmt.Sprintf("%sstates:\n", indent))
+	for i, state := range faNext.states {
+		buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
+		unravelFaState(buf, state, depth+2)
+	}
+}
+
+func unravelFaState(buf *bytes.Buffer, state *faState, depth int) {
+	indent := strings.Repeat("  ", depth)
+	buf.WriteString(fmt.Sprintf("%stable:\n", indent))
+	unravelSmallTable(buf, state.table, depth+1)
+	buf.WriteString(fmt.Sprintf("%sfieldTransitions:\n", indent))
+	for i, fm := range state.fieldTransitions {
+		buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
+		unravelFieldMatcher(buf, fm, depth+2)
 	}
 }

@@ -1,7 +1,9 @@
 package quamina
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -61,4 +63,37 @@ func TestUnpack(t *testing.T) {
 			}
 		}
 	}
+}
+
+func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int) {
+	indent := strings.Repeat("  ", depth)
+	buf.WriteString(fmt.Sprintf("%sceilings: %s\n", indent, formatCeilings(table.ceilings)))
+	buf.WriteString(fmt.Sprintf("%ssteps:\n", indent))
+	for i, step := range table.steps {
+		if step != nil {
+			buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
+			unravelFaNext(buf, step, depth+2)
+		} else {
+			buf.WriteString(fmt.Sprintf("%s  %d: <nil>\n", indent, i))
+		}
+	}
+	buf.WriteString(fmt.Sprintf("%sepsilon:\n", indent))
+	for i, state := range table.epsilon {
+		buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
+		unravelFaState(buf, state, depth+2)
+	}
+}
+
+func formatCeilings(ceilings []byte) string {
+	var formatted []string
+	for i, ceiling := range ceilings {
+		if i == len(ceilings)-1 && ceiling == byte(byteCeiling) {
+			formatted = append(formatted, fmt.Sprintf("byteCeiling(0x%02X)", ceiling))
+		} else if ceiling >= 32 && ceiling <= 126 {
+			formatted = append(formatted, fmt.Sprintf("'%c'", ceiling))
+		} else {
+			formatted = append(formatted, fmt.Sprintf("0x%02X", ceiling))
+		}
+	}
+	return "[" + strings.Join(formatted, ", ") + "]"
 }

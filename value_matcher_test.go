@@ -1,6 +1,7 @@
 package quamina
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -418,4 +419,40 @@ func TestMergeNfaAndNumeric(t *testing.T) {
 			t.Error("Match failed on " + e)
 		}
 	}
+}
+
+func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int) {
+	indent := strings.Repeat("  ", depth)
+	fields := vm.fields()
+
+	if fields.startTable != nil {
+		buf.WriteString(fmt.Sprintf("%sstartTable:\n", indent))
+		buf.WriteString(fmt.Sprintf("%s  ceilings: %s\n", indent, formatCeilings(fields.startTable.ceilings)))
+		buf.WriteString(fmt.Sprintf("%s  steps:\n", indent))
+		for i, step := range fields.startTable.steps {
+			if step != nil {
+				buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
+				unravelFaNext(buf, step, depth+3)
+			} else {
+				buf.WriteString(fmt.Sprintf("%s    %d: <nil>\n", indent, i))
+			}
+		}
+		buf.WriteString(fmt.Sprintf("%s  epsilon:\n", indent))
+		for i, state := range fields.startTable.epsilon {
+			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
+			unravelFaState(buf, state, depth+3)
+		}
+	}
+
+	if fields.singletonMatch != nil {
+		buf.WriteString(fmt.Sprintf("%ssingletonMatch: %s\n", indent, string(fields.singletonMatch)))
+	}
+
+	if fields.singletonTransition != nil {
+		buf.WriteString(fmt.Sprintf("%ssingletonTransition:\n", indent))
+		unravelFieldMatcher(buf, fields.singletonTransition, depth+1)
+	}
+
+	buf.WriteString(fmt.Sprintf("%shasNumbers: %v\n", indent, fields.hasNumbers))
+	buf.WriteString(fmt.Sprintf("%sisNondeterministic: %v\n", indent, fields.isNondeterministic))
 }

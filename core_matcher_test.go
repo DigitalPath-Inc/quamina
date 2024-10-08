@@ -1,6 +1,7 @@
 package quamina
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 )
@@ -322,4 +323,12 @@ func TestSimpleaddPattern(t *testing.T) {
 	if !ok {
 		t.Error("No trans from start on 'a'")
 	}
+}
+
+func unravelMatcher(m *coreMatcher) string {
+	var buf bytes.Buffer
+	buf.WriteString("m:\n")
+	buf.WriteString("  fields:\n")
+	unravelFieldMatcher(&buf, m.fields().state, 2)
+	return buf.String()
 }
