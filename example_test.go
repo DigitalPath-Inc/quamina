@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"quamina.net/go/quamina"
+	"github.com/DigitalPath-Inc/quamina"
 )
 
 const userRegisteredEvent = `{

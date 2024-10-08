@@ -3,7 +3,7 @@ package quamina_test
 import (
 	"testing"
 
-	"quamina.net/go/quamina"
+	"github.com/DigitalPath-Inc/quamina"
 )
 
 type fakeFlattener struct {
