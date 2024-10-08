@@ -44,7 +44,7 @@ func (t *trieNode) insert(value []byte, x X) {
 	node.memberOfPatterns[x] = struct{}{}
 }
 
-func matcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
+func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
 	// start := time.Now()
 	fields := make(map[string]struct{})
 	root, err := trieFromPatterns(patterns, &fields)

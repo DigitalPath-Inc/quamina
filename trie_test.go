@@ -41,7 +41,7 @@ func TestMatcherFromSimplePatterns(t *testing.T) {
 	patterns[X("pattern_0")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
 	patterns[X("pattern_1")] = `{"field_0":["baz", "qux"], "field_1":["asdf", "zxcv"]}`
 
-	matcher, err := matcherFromPatterns(patterns)
+	matcher, err := MatcherFromPatterns(patterns)
 	assert.NoError(t, err)
 
 	matches, err := matcher.matchesForJSONEvent([]byte(`{"field_0": "foo", "field_1": "asdf"}`))
@@ -73,7 +73,7 @@ func TestMatcherFromPatterns(t *testing.T) {
 	}
 
 	// Build matcher
-	matcher, err := matcherFromPatterns(patterns)
+	matcher, err := MatcherFromPatterns(patterns)
 	assert.NoError(t, err)
 
 	// Generate 10 events that should match
@@ -140,7 +140,7 @@ func TestMatcherFromPatterns(t *testing.T) {
 }
 
 func BenchmarkMatcherFromPatterns(b *testing.B) {
-	patternsJSON := generatePatterns(100, []int{750, 3})
+	patternsJSON := generatePatterns(10000, []int{1000})
 	patterns := make(map[X]string)
 
 	for i, pattern := range patternsJSON {
@@ -148,7 +148,7 @@ func BenchmarkMatcherFromPatterns(b *testing.B) {
 	}
 
 	start := time.Now()
-	_, err := matcherFromPatterns(patterns)
+	_, err := MatcherFromPatterns(patterns)
 	if err != nil {
 		b.Fatalf("Error building matcher: %v", err)
 	}
