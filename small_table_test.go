@@ -66,6 +66,11 @@ func TestUnpack(t *testing.T) {
 }
 
 func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int) {
+	if table == nil {
+		buf.WriteString(fmt.Sprintf("%s<nil>\n", strings.Repeat("  ", depth)))
+		return
+	}
+
 	indent := strings.Repeat("  ", depth)
 	buf.WriteString(fmt.Sprintf("%sceilings: %s\n", indent, formatCeilings(table.ceilings)))
 	buf.WriteString(fmt.Sprintf("%ssteps:\n", indent))

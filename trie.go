@@ -1,6 +1,7 @@
 package quamina
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -13,6 +14,7 @@ type pathTrie struct {
 type trieNode struct {
 	children         map[byte]*trieNode
 	isEnd            bool
+	isWildcard       bool
 	memberOfPatterns map[X]struct{}
 	transition       map[string]*pathTrie
 }
@@ -116,91 +118,102 @@ func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
 	remainingFields := fields[1:]
 
 	for _, val := range currentField.vals {
-		node := trie.node
-		for _, ch := range []byte(val.val) {
-			if node.children == nil {
-				node.children = make(map[byte]*trieNode)
-			}
-			if _, exists := node.children[ch]; !exists {
-				node.children[ch] = newTrie()
-			}
-			node = node.children[ch]
+		var err error
+		switch val.vType {
+		case stringType, literalType, numberType:
+			err = insertStringValue(trie, val.val, remainingFields, x)
+		// case existsTrueType, existsFalseType:
+		// 	err = insertExistsValue(trie, val.vType == existsTrueType, remainingFields, x)
+		// case shellStyleType:
+		// 	err = insertShellStyleValue(trie, val.val, remainingFields, x)
+		// case anythingButType:
+		// 	err = insertAnythingButValue(trie, val.list, remainingFields, x)
+		case prefixType:
+			err = insertPrefixValue(trie, val.val, remainingFields, x)
+		// case monocaseType:
+		// 	err = insertMonocaseValue(trie, val.val, remainingFields, x)
+		// case wildcardType:
+		// 	err = insertWildcardValue(trie, val.val, remainingFields, x)
+		default:
+			return fmt.Errorf("unknown value type: %v", val.vType)
 		}
-
-		if len(remainingFields) == 0 {
-			node.isEnd = true
-			if node.memberOfPatterns == nil {
-				node.memberOfPatterns = make(map[X]struct{})
-			}
-			node.memberOfPatterns[x] = struct{}{}
-		} else {
-			if node.transition == nil {
-				node.transition = make(map[string]*pathTrie)
-			}
-			if _, exists := node.transition[remainingFields[0].path]; !exists {
-				nextTrie := newPathTrie(remainingFields[0].path)
-				node.transition[remainingFields[0].path] = nextTrie
-				err := buildTrie(nextTrie, remainingFields, x)
-				if err != nil {
-					return err
-				}
-			} else {
-				err := buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
-				if err != nil {
-					return err
-				}
-			}
+		if err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func copyTrie(dest, src *trieNode) {
-	for ch, child := range src.children {
-		destChild := newTrie()
-		dest.children[ch] = destChild
-		copyTrie(destChild, child)
+func insertStringValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
+	node := trie.node
+	for _, ch := range []byte(value) {
+		if node.children == nil {
+			node.children = make(map[byte]*trieNode)
+		}
+		if _, exists := node.children[ch]; !exists {
+			node.children[ch] = newTrie()
+		}
+		node = node.children[ch]
 	}
-	dest.isEnd = src.isEnd
-	for x := range src.memberOfPatterns {
-		dest.memberOfPatterns[x] = struct{}{}
+
+	if len(remainingFields) == 0 {
+		node.isEnd = true
+		if node.memberOfPatterns == nil {
+			node.memberOfPatterns = make(map[X]struct{})
+		}
+		node.memberOfPatterns[x] = struct{}{}
+	} else {
+		if node.transition == nil {
+			node.transition = make(map[string]*pathTrie)
+		}
+		if _, exists := node.transition[remainingFields[0].path]; !exists {
+			nextTrie := newPathTrie(remainingFields[0].path)
+			node.transition[remainingFields[0].path] = nextTrie
+			return buildTrie(nextTrie, remainingFields, x)
+		} else {
+			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
+		}
 	}
+
+	return nil
 }
 
-func attachFieldTrie(root *trieNode, fieldName string, fieldTrie *trieNode) {
-	var attachToNodes func(*trieNode)
-	attachToNodes = func(node *trieNode) {
-		if node.isEnd {
-			// Create a new trie for this transition that only includes matching patterns
-			newTrie := newTrie()
-			copyTrieWithPatternFilter(newTrie, fieldTrie, node.memberOfPatterns)
-			if len(newTrie.children) > 0 {
-				node.transition[fieldName] = newPathTrie(fieldName)
-			}
+func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
+	node := trie.node
+	for i := 0; i < len(value)-1; i++ { // Stop one short to skip the closing quote
+		ch := value[i]
+		if node.children == nil {
+			node.children = make(map[byte]*trieNode)
 		}
-		for _, child := range node.children {
-			attachToNodes(child)
+		if _, exists := node.children[ch]; !exists {
+			node.children[ch] = newTrie()
 		}
+		node = node.children[ch]
 	}
-	attachToNodes(root)
-}
 
-func copyTrieWithPatternFilter(dest, src *trieNode, allowedPatterns map[X]struct{}) {
-	for ch, child := range src.children {
-		destChild := newTrie()
-		copyTrieWithPatternFilter(destChild, child, allowedPatterns)
-		if len(destChild.children) > 0 || len(destChild.memberOfPatterns) > 0 {
-			dest.children[ch] = destChild
-		}
+	// Mark the last node as a prefix end
+	node.isWildcard = true
 
-	}
-	dest.isEnd = src.isEnd
-	for x := range src.memberOfPatterns {
-		if _, exists := allowedPatterns[x]; exists {
-			dest.memberOfPatterns[x] = struct{}{}
+	if len(remainingFields) == 0 {
+		if node.memberOfPatterns == nil {
+			node.memberOfPatterns = make(map[X]struct{})
+		}
+		node.memberOfPatterns[x] = struct{}{}
+	} else {
+		if node.transition == nil {
+			node.transition = make(map[string]*pathTrie)
+		}
+		if _, exists := node.transition[remainingFields[0].path]; !exists {
+			nextTrie := newPathTrie(remainingFields[0].path)
+			node.transition[remainingFields[0].path] = nextTrie
+			return buildTrie(nextTrie, remainingFields, x)
+		} else {
+			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
 		}
 	}
+
+	return nil
 }
 
 func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
@@ -255,11 +268,9 @@ func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher) error {
 
 func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	size := len(node.children) + len(node.transition)
-	// bytes := make([]byte, 0, size)
-	// steps := make([]*faNext, 0, size)
 	states := make(map[byte]*faNext, size)
 
-	if node.isEnd {
+	if node.isEnd || (node.isWildcard && len(node.memberOfPatterns) > 0) {
 		endState := &faState{
 			table:            newSmallTable(),
 			fieldTransitions: make([]*fieldMatcher, 0, len(node.memberOfPatterns)),
@@ -271,66 +282,51 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 			fm.addMatch(x)
 			endState.fieldTransitions = append(endState.fieldTransitions, fm)
 		}
-		// bytes = append(bytes, valueTerminator)
-		// steps = append(steps, &faNext{states: []*faState{endState}})
 		states[valueTerminator] = &faNext{states: []*faState{endState}}
 	}
 
 	// Handle transitions
 	if len(node.transition) > 0 {
-		transitions := make(map[string]*valueMatcher)
-		nextState := &faState{
-			table:            newSmallTable(),
-			fieldTransitions: make([]*fieldMatcher, 0),
-		}
-
-		for nextFieldPath, transitionNode := range node.transition {
-			nextVM := newValueMatcher()
-			err := convertPathTrieToValueMatcher(transitionNode, nextVM)
-			if err != nil {
-				return nil, err
-			}
-			transitions[nextFieldPath] = nextVM
-		}
-		fields := &fmFields{
-			transitions: transitions,
-			existsTrue:  make(map[string]*fieldMatcher),
-			existsFalse: make(map[string]*fieldMatcher),
-		}
-		fm := &fieldMatcher{}
-		fm.updateable.Store(fields)
-
-		nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
-		// bytes = append(bytes, valueTerminator)
-		// steps = append(steps, &faNext{states: []*faState{nextState}})
-		states[valueTerminator] = &faNext{states: []*faState{nextState}}
-	}
-
-	for ch, child := range node.children {
-		childTable, err := buildSmallTableFromTrie(child)
+		transitionState, err := handleTransitions(node.transition)
 		if err != nil {
 			return nil, err
 		}
-
-		nextState := &faState{
-			table: childTable,
-		}
-
-		// bytes = append(bytes, ch)
-		// steps = append(steps, &faNext{states: []*faState{nextState}})
-		states[ch] = &faNext{states: []*faState{nextState}}
+		states[valueTerminator] = &faNext{states: []*faState{transitionState}}
 	}
 
-	// Sort bytes and steps together, maintaining their associations
+	for ch, child := range node.children {
+		fmt.Printf("Child: %v\n", ch)
+		fmt.Printf("Child attrs: %+v\n", child)
 
-	// fmt.Println("States Pre-sort: ", states)
+		nextState := &faState{
+			table: newSmallTable(),
+		}
 
-	// sort.Slice(steps, func(i, j int) bool {
-	// 	return bytes[i] < bytes[j]
-	// })
-	// sort.Slice(bytes, func(i, j int) bool {
-	// 	return bytes[i] < bytes[j]
-	// })
+		// Handle the wildcard scenario without adding a new state
+		if child.isWildcard {
+			for x := range child.memberOfPatterns {
+				fm := newFieldMatcher()
+				fm.addMatch(x)
+				nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
+			}
+
+			if len(child.transition) > 0 {
+				transitionState, err := handleTransitions(child.transition)
+				if err != nil {
+					return nil, err
+				}
+				nextState.fieldTransitions = append(nextState.fieldTransitions, transitionState.fieldTransitions...)
+			}
+		} else {
+			childTable, err := buildSmallTableFromTrie(child)
+			if err != nil {
+				return nil, err
+			}
+			nextState.table = childTable
+		}
+
+		states[ch] = &faNext{states: []*faState{nextState}}
+	}
 
 	// Convert the states map to a sorted slice of byte and faNext pairs
 	bytes := make([]byte, 0, len(states))
@@ -346,7 +342,41 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 		steps = append(steps, states[ch])
 	}
 
+	if len(bytes) == 0 {
+		fmt.Println("Children: ", node.children)
+		fmt.Println("Transitions: ", node.transition)
+		fmt.Println("IsEnd: ", node.isEnd)
+		fmt.Println("IsWildcard: ", node.isWildcard)
+		fmt.Println("MemberOfPatterns: ", node.memberOfPatterns)
+	}
 	return makeSmallTable(nil, bytes, steps), nil
+}
+
+func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
+	transitionVMs := make(map[string]*valueMatcher)
+	nextState := &faState{
+		table:            newSmallTable(),
+		fieldTransitions: make([]*fieldMatcher, 0),
+	}
+
+	for nextFieldPath, transitionNode := range transitions {
+		nextVM := newValueMatcher()
+		err := convertPathTrieToValueMatcher(transitionNode, nextVM)
+		if err != nil {
+			return nil, err
+		}
+		transitionVMs[nextFieldPath] = nextVM
+	}
+	fields := &fmFields{
+		transitions: transitionVMs,
+		existsTrue:  make(map[string]*fieldMatcher),
+		existsFalse: make(map[string]*fieldMatcher),
+	}
+	fm := &fieldMatcher{}
+	fm.updateable.Store(fields)
+
+	nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
+	return nextState, nil
 }
 
 type valueMatcherPrinter struct {

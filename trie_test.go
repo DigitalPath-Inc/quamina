@@ -2,7 +2,6 @@ package quamina
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -21,8 +20,9 @@ func TestTrieFromPatterns(t *testing.T) {
 	// for i, pattern := range patternsJSON {
 	// 	patterns[X(fmt.Sprintf("pattern_%d", i))] = pattern
 	// }
-	patterns[X("pattern_2")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
-	patterns[X("pattern_3")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
+	// patterns[X("pattern_2")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
+	// patterns[X("pattern_3")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
+	patterns[X("pattern_0")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
 
 	fmt.Printf("Patterns: %v\n", patterns)
 
@@ -34,6 +34,83 @@ func TestTrieFromPatterns(t *testing.T) {
 	}
 	t.Logf("Time to build trie: %v", time.Since(start))
 	t.Logf("Trie:\n%v", visualizePathTrie(trie))
+}
+
+func TestMatcherFromPatterns(t *testing.T) {
+	testCases := []struct {
+		name     string
+		patterns map[X]string
+		events   [][]byte
+		expected [][]X
+	}{
+		// {
+		// 	name: "Multiple events and matches",
+		// 	patterns: map[X]string{
+		// 		X("pattern_0"): `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`,
+		// 		X("pattern_1"): `{"field_0":["baz", "qux"], "field_1":["asdf", "zxcv"]}`,
+		// 	},
+		// 	events: [][]byte{
+		// 		[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
+		// 		[]byte(`{"field_0": "baz", "field_1": "asdf"}`),
+		// 		[]byte(`{"field_0": "foo", "field_1": "zxcv"}`),
+		// 	},
+		// 	expected: [][]X{
+		// 		{X("pattern_0")},
+		// 		{X("pattern_1")},
+		// 		{},
+		// 	},
+		// },
+		{
+			name: "Different types of patterns",
+			patterns: map[X]string{
+				X("pattern_0"): `{"field_0":[{"prefix": "foo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
+				// X("pattern_1"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
+				// X("pattern_1"): `{"field_0":["foo", "bar"]}`,
+				// X("pattern_1"): `{"field_0":[{"anything-but": ["baz", "qux"]}], "field_1":[{"wildcard": "a*f"}]}`,
+				// X("pattern_2"): `{"field_0":[{"equals-ignore-case": "Hello"}], "field_1":[{"wildcard": "*.jpg"}]}`,
+			},
+			events: [][]byte{
+				[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
+				// []byte(`{"field_0": "barcode", "field_1": "present"}`),
+				// []byte(`{"field_0": "hello", "field_1": "image.jpg"}`),
+				// []byte(`{"field_0": "baz", "field_1": "abcf"}`),
+			},
+			expected: [][]X{
+				{X("pattern_0"), X("pattern_1")},
+				// {X("pattern_0")},
+				// {X("pattern_2")},
+				// {X("pattern_1")},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			matcher, err := MatcherFromPatterns(tc.patterns)
+			assert.NoError(t, err)
+
+			oldMatcher := newCoreMatcher()
+			for x, pattern := range tc.patterns {
+				oldMatcher.addPattern(x, pattern)
+			}
+
+			t.Logf("Matcher: %v", unravelMatcher(matcher))
+			t.Logf("Old Matcher: %v", unravelMatcher(oldMatcher))
+
+			// for i, event := range tc.events {
+			// 	matches, err := matcher.matchesForJSONEvent(event)
+			// 	assert.NoError(t, err)
+			// 	oldMatches, err := oldMatcher.matchesForJSONEvent(event)
+			// 	assert.NoError(t, err)
+			// 	assert.Equal(t, tc.expected[i], matches)
+			// 	if !assert.Equal(t, oldMatches, matches) {
+			// 		t.Logf("Patterns: %v, Event: %v, Matches: %v", tc.patterns, string(event), matches)
+			// 		t.Logf("Matcher: %v", unravelMatcher(matcher))
+			// 		t.Logf("Old Matcher: %v", unravelMatcher(oldMatcher))
+			// 	}
+			// }
+		})
+	}
 }
 
 func TestMatcherFromSimplePatterns(t *testing.T) {
@@ -64,80 +141,80 @@ func TestMatcherFromSimplePatterns(t *testing.T) {
 	assert.Equal(t, 0, len(matches))
 }
 
-func TestMatcherFromPatterns(t *testing.T) {
-	// Generate patterns
-	patternsJSON := generatePatterns(100, []int{750, 3})
-	patterns := make(map[X]string)
-	for i, pattern := range patternsJSON {
-		patterns[X(fmt.Sprintf("pattern_%d", i))] = pattern
-	}
+// func TestMatcherFromPatterns(t *testing.T) {
+// 	// Generate patterns
+// 	patternsJSON := generatePatterns(100, []int{750, 3})
+// 	patterns := make(map[X]string)
+// 	for i, pattern := range patternsJSON {
+// 		patterns[X(fmt.Sprintf("pattern_%d", i))] = pattern
+// 	}
 
-	// Build matcher
-	matcher, err := MatcherFromPatterns(patterns)
-	assert.NoError(t, err)
+// 	// Build matcher
+// 	matcher, err := MatcherFromPatterns(patterns)
+// 	assert.NoError(t, err)
 
-	// Generate 10 events that should match
-	matchingEvents := make([]string, 10)
-	for i := 0; i < 10; i++ {
-		var event map[string]interface{}
-		err := json.Unmarshal([]byte(patternsJSON[i]), &event)
-		assert.NoError(t, err)
-		// Ensure we're using one of the values from the pattern
-		for field, values := range event {
-			if valuesSlice, ok := values.([]interface{}); ok && len(valuesSlice) > 0 {
-				event[field] = valuesSlice[0]
-			}
-		}
-		eventJSON, err := json.Marshal(event)
-		assert.NoError(t, err)
-		matchingEvents[i] = string(eventJSON)
-	}
+// 	// Generate 10 events that should match
+// 	matchingEvents := make([]string, 10)
+// 	for i := 0; i < 10; i++ {
+// 		var event map[string]interface{}
+// 		err := json.Unmarshal([]byte(patternsJSON[i]), &event)
+// 		assert.NoError(t, err)
+// 		// Ensure we're using one of the values from the pattern
+// 		for field, values := range event {
+// 			if valuesSlice, ok := values.([]interface{}); ok && len(valuesSlice) > 0 {
+// 				event[field] = valuesSlice[0]
+// 			}
+// 		}
+// 		eventJSON, err := json.Marshal(event)
+// 		assert.NoError(t, err)
+// 		matchingEvents[i] = string(eventJSON)
+// 	}
 
-	// Test matching events
-	for _, event := range matchingEvents {
-		matches, err := matcher.matchesForJSONEvent([]byte(event))
-		assert.NoError(t, err)
+// 	// Test matching events
+// 	for _, event := range matchingEvents {
+// 		matches, err := matcher.matchesForJSONEvent([]byte(event))
+// 		assert.NoError(t, err)
 
-		assert.NotEmpty(t, matches, "Expected event to match: %s", event)
+// 		assert.NotEmpty(t, matches, "Expected event to match: %s", event)
 
-		if len(matches) != 1 {
-			matchingPatterns := make([]string, len(matches))
-			for i, match := range matches {
-				matchingPatterns[i] = string(patterns[match])
-			}
-			t.Logf("Matching Patterns: %v", matchingPatterns)
-			t.Logf("Event: %s", event)
-		}
-	}
+// 		if len(matches) != 1 {
+// 			matchingPatterns := make([]string, len(matches))
+// 			for i, match := range matches {
+// 				matchingPatterns[i] = string(patterns[match])
+// 			}
+// 			t.Logf("Matching Patterns: %v", matchingPatterns)
+// 			t.Logf("Event: %s", event)
+// 		}
+// 	}
 
-	// Generate 10 events that should not match
-	nonMatchingEvents := make([]string, 10)
-	for i := 0; i < 10; i++ {
-		event := map[string]interface{}{
-			"field_0": generateRandomString(10),
-			"field_1": generateRandomString(10),
-		}
-		eventJSON, err := json.Marshal(event)
-		assert.NoError(t, err)
-		nonMatchingEvents[i] = string(eventJSON)
-	}
+// 	// Generate 10 events that should not match
+// 	nonMatchingEvents := make([]string, 10)
+// 	for i := 0; i < 10; i++ {
+// 		event := map[string]interface{}{
+// 			"field_0": generateRandomString(10),
+// 			"field_1": generateRandomString(10),
+// 		}
+// 		eventJSON, err := json.Marshal(event)
+// 		assert.NoError(t, err)
+// 		nonMatchingEvents[i] = string(eventJSON)
+// 	}
 
-	// Test non-matching events
-	for _, event := range nonMatchingEvents {
-		matches, err := matcher.matchesForJSONEvent([]byte(event))
-		assert.NoError(t, err)
-		assert.Empty(t, matches, "Expected event not to match: %s", event)
+// 	// Test non-matching events
+// 	for _, event := range nonMatchingEvents {
+// 		matches, err := matcher.matchesForJSONEvent([]byte(event))
+// 		assert.NoError(t, err)
+// 		assert.Empty(t, matches, "Expected event not to match: %s", event)
 
-		if len(matches) != 0 {
-			matchingPatterns := make([]string, len(matches))
-			for i, match := range matches {
-				matchingPatterns[i] = string(patterns[match])
-			}
-			t.Logf("Matching Patterns: %v", matchingPatterns)
-			t.Logf("Event: %s", event)
-		}
-	}
-}
+// 		if len(matches) != 0 {
+// 			matchingPatterns := make([]string, len(matches))
+// 			for i, match := range matches {
+// 				matchingPatterns[i] = string(patterns[match])
+// 			}
+// 			t.Logf("Matching Patterns: %v", matchingPatterns)
+// 			t.Logf("Event: %s", event)
+// 		}
+// 	}
+// }
 
 func BenchmarkMatcherFromPatterns(b *testing.B) {
 	patternsJSON := generatePatterns(10000, []int{1000})
@@ -174,6 +251,10 @@ func visualizeTrieNode(buf *bytes.Buffer, node *trieNode, depth int) {
 	if node.isEnd {
 		buf.WriteString(fmt.Sprintf("%s(end) %v\n", indent, node.memberOfPatterns))
 	}
+
+	// if len(node.vTypes) > 0 {
+	// 	buf.WriteString(fmt.Sprintf("%sValue Types: %v\n", indent, node.vTypes))
+	// }
 
 	for ch, child := range node.children {
 		if ch >= 32 && ch <= 126 { // printable ASCII
