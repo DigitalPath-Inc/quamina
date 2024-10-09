@@ -85,22 +85,41 @@ func TestFocusedMerge(t *testing.T) {
 	}
 }
 
-func unravelFaNext(buf *bytes.Buffer, faNext *faNext, depth int) {
+func unravelFaNext(buf *bytes.Buffer, faNext *faNext, depth int, showMemoryAddress bool) {
 	indent := strings.Repeat("  ", depth)
-	buf.WriteString(fmt.Sprintf("%sstates:\n", indent))
+	if showMemoryAddress {
+		buf.WriteString(fmt.Sprintf("%sfaNext: %p\n", indent, faNext))
+	} else {
+		buf.WriteString(fmt.Sprintf("%sfaNext:\n", indent))
+	}
+	buf.WriteString(fmt.Sprintf("%s  states:\n", indent))
 	for i, state := range faNext.states {
-		buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
-		unravelFaState(buf, state, depth+2)
+		if showMemoryAddress {
+			buf.WriteString(fmt.Sprintf("%s    %d: %p\n", indent, i, state))
+		} else {
+			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
+		}
+		unravelFaState(buf, state, depth+2, showMemoryAddress)
 	}
 }
 
-func unravelFaState(buf *bytes.Buffer, state *faState, depth int) {
+func unravelFaState(buf *bytes.Buffer, state *faState, depth int, showMemoryAddress bool) {
 	indent := strings.Repeat("  ", depth)
-	buf.WriteString(fmt.Sprintf("%stable:\n", indent))
-	unravelSmallTable(buf, state.table, depth+1)
-	buf.WriteString(fmt.Sprintf("%sfieldTransitions:\n", indent))
+	if showMemoryAddress {
+		buf.WriteString(fmt.Sprintf("%sfaState: %p\n", indent, state))
+		buf.WriteString(fmt.Sprintf("%s  table: %p\n", indent, state.table))
+	} else {
+		buf.WriteString(fmt.Sprintf("%sfaState:\n", indent))
+		buf.WriteString(fmt.Sprintf("%s  table:\n", indent))
+	}
+	unravelSmallTable(buf, state.table, depth+1, showMemoryAddress)
+	buf.WriteString(fmt.Sprintf("%s  fieldTransitions:\n", indent))
 	for i, fm := range state.fieldTransitions {
-		buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
-		unravelFieldMatcher(buf, fm, depth+2)
+		if showMemoryAddress {
+			buf.WriteString(fmt.Sprintf("%s    %d: %p\n", indent, i, fm))
+		} else {
+			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
+		}
+		unravelFieldMatcher(buf, fm, depth+2, showMemoryAddress)
 	}
 }

@@ -325,10 +325,14 @@ func TestSimpleaddPattern(t *testing.T) {
 	}
 }
 
-func unravelMatcher(m *coreMatcher) string {
+func unravelMatcher(m *coreMatcher, showMemoryAddress bool) string {
 	var buf bytes.Buffer
-	buf.WriteString("m:\n")
+	if showMemoryAddress {
+		buf.WriteString(fmt.Sprintf("m: %p\n", m))
+	} else {
+		buf.WriteString("m:\n")
+	}
 	buf.WriteString("  fields:\n")
-	unravelFieldMatcher(&buf, m.fields().state, 2)
+	unravelFieldMatcher(&buf, m.fields().state, 2, showMemoryAddress)
 	return buf.String()
 }

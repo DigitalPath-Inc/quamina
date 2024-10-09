@@ -3,6 +3,7 @@ package quamina
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -130,8 +131,8 @@ func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
 		// 	err = insertAnythingButValue(trie, val.list, remainingFields, x)
 		case prefixType:
 			err = insertPrefixValue(trie, val.val, remainingFields, x)
-		// case monocaseType:
-		// 	err = insertMonocaseValue(trie, val.val, remainingFields, x)
+		case monocaseType:
+			err = insertMonocaseValue(trie, val.val, remainingFields, x)
 		// case wildcardType:
 		// 	err = insertWildcardValue(trie, val.val, remainingFields, x)
 		default:
@@ -216,6 +217,34 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 	return nil
 }
 
+// insertMonocaseValue uses the same logic as insertStringValue but handles case folding. It basically generates two paths for each rune in the value
+// and adds them to the trie. We first generate all the permutations of the value, then add each as a trie
+func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
+	permutations := getAltPermutations(value)
+	for _, perm := range permutations {
+		err := insertStringValue(trie, perm, remainingFields, x)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getAltPermutations(value string) []string {
+	permutations := []string{value}
+	for i, r := range value {
+		if altRune, ok := caseFoldingPairs[r]; ok {
+			newPermutations := make([]string, len(permutations))
+			for j, perm := range permutations {
+				newPerm := perm[:i] + string(altRune) + perm[i+1:]
+				newPermutations[j] = newPerm
+			}
+			permutations = append(permutations, newPermutations...)
+		}
+	}
+	return permutations
+}
+
 func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
 	fields := cm.fields()
 	freshFields := &coreFields{
@@ -270,61 +299,16 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	size := len(node.children) + len(node.transition)
 	states := make(map[byte]*faNext, size)
 
-	if node.isEnd || (node.isWildcard && len(node.memberOfPatterns) > 0) {
-		endState := &faState{
-			table:            newSmallTable(),
-			fieldTransitions: make([]*fieldMatcher, 0, len(node.memberOfPatterns)),
-		}
-
-		// Handle pattern matches
-		for x := range node.memberOfPatterns {
-			fm := newFieldMatcher()
-			fm.addMatch(x)
-			endState.fieldTransitions = append(endState.fieldTransitions, fm)
-		}
-		states[valueTerminator] = &faNext{states: []*faState{endState}}
+	if node.isEnd || node.isWildcard {
+		createEndState(node, &states)
 	}
 
-	// Handle transitions
 	if len(node.transition) > 0 {
-		transitionState, err := handleTransitions(node.transition)
-		if err != nil {
-			return nil, err
-		}
-		states[valueTerminator] = &faNext{states: []*faState{transitionState}}
+		createTransitionState(node, &states)
 	}
 
 	for ch, child := range node.children {
-		fmt.Printf("Child: %v\n", ch)
-		fmt.Printf("Child attrs: %+v\n", child)
-
-		nextState := &faState{
-			table: newSmallTable(),
-		}
-
-		// Handle the wildcard scenario without adding a new state
-		if child.isWildcard {
-			for x := range child.memberOfPatterns {
-				fm := newFieldMatcher()
-				fm.addMatch(x)
-				nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
-			}
-
-			if len(child.transition) > 0 {
-				transitionState, err := handleTransitions(child.transition)
-				if err != nil {
-					return nil, err
-				}
-				nextState.fieldTransitions = append(nextState.fieldTransitions, transitionState.fieldTransitions...)
-			}
-		} else {
-			childTable, err := buildSmallTableFromTrie(child)
-			if err != nil {
-				return nil, err
-			}
-			nextState.table = childTable
-		}
-
+		nextState := getOrCreateState(child)
 		states[ch] = &faNext{states: []*faState{nextState}}
 	}
 
@@ -350,6 +334,98 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 		fmt.Println("MemberOfPatterns: ", node.memberOfPatterns)
 	}
 	return makeSmallTable(nil, bytes, steps), nil
+}
+
+type stateCache map[string]*faNext
+
+var globalStateCache = make(stateCache)
+
+func createEndState(node *trieNode, states *map[byte]*faNext) {
+	key := getStateKey(node)
+	if cachedState, exists := globalStateCache[key]; exists {
+		(*states)[valueTerminator] = cachedState
+		return
+	}
+
+	endState := &faState{
+		table:            newSmallTable(),
+		fieldTransitions: make([]*fieldMatcher, 0, len(node.memberOfPatterns)),
+	}
+
+	// Handle pattern matches
+	for x := range node.memberOfPatterns {
+		fm := newFieldMatcher()
+		fm.addMatch(x)
+		endState.fieldTransitions = append(endState.fieldTransitions, fm)
+	}
+
+	globalStateCache[key] = &faNext{states: []*faState{endState}}
+	(*states)[valueTerminator] = globalStateCache[key]
+}
+
+func createTransitionState(node *trieNode, states *map[byte]*faNext) {
+	key := getStateKey(node)
+	if cachedState, exists := globalStateCache[key]; exists {
+		(*states)[valueTerminator] = cachedState
+		return
+	}
+
+	transitionState, _ := handleTransitions(node.transition)
+	globalStateCache[key] = &faNext{states: []*faState{transitionState}}
+	(*states)[valueTerminator] = globalStateCache[key]
+}
+
+func createWildcardState(node *trieNode, nextState *faState) error {
+	for x := range node.memberOfPatterns {
+		fm := newFieldMatcher()
+		fm.addMatch(x)
+		nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
+	}
+
+	if len(node.transition) > 0 {
+		transitionState, err := handleTransitions(node.transition)
+		if err != nil {
+			return err
+		}
+		nextState.fieldTransitions = append(nextState.fieldTransitions, transitionState.fieldTransitions...)
+	}
+
+	return nil
+}
+
+func getStateKey(node *trieNode) string {
+	var key strings.Builder
+
+	// Add basic properties
+	key.WriteString(fmt.Sprintf("end:%v|wildcard:%v|", node.isEnd, node.isWildcard))
+
+	// Add patterns
+	patterns := make([]string, 0, len(node.memberOfPatterns))
+	for x := range node.memberOfPatterns {
+		patterns = append(patterns, x.(string))
+	}
+	sort.Strings(patterns)
+	key.WriteString(fmt.Sprintf("patterns:%v|", patterns))
+
+	// Add children
+	childKeys := make([]string, 0, len(node.children))
+	for ch, child := range node.children {
+		childKey := fmt.Sprintf("%d:%s", ch, getStateKey(child))
+		childKeys = append(childKeys, childKey)
+	}
+	sort.Strings(childKeys)
+	key.WriteString(fmt.Sprintf("children:%v|", childKeys))
+
+	// Add transitions
+	transitions := make([]string, 0, len(node.transition))
+	for t, pathTrie := range node.transition {
+		transitionKey := fmt.Sprintf("%s:%s", t, getStateKey(pathTrie.node))
+		transitions = append(transitions, transitionKey)
+	}
+	sort.Strings(transitions)
+	key.WriteString(fmt.Sprintf("transitions:%v", transitions))
+
+	return key.String()
 }
 
 func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
@@ -379,10 +455,23 @@ func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
 	return nextState, nil
 }
 
-type valueMatcherPrinter struct {
-	vm *valueMatcher
-}
+func getOrCreateState(node *trieNode) *faState {
+	key := getStateKey(node)
+	if cachedState, exists := globalStateCache[key]; exists {
+		return cachedState.states[0]
+	}
 
-func (vmp *valueMatcherPrinter) labelTable(table *smallTable, label string) {
-	// Implementation can be empty if you don't need to do anything here
+	newState := &faState{
+		table: newSmallTable(),
+	}
+
+	if node.isWildcard {
+		createWildcardState(node, newState)
+	} else {
+		childTable, _ := buildSmallTableFromTrie(node)
+		newState.table = childTable
+	}
+
+	globalStateCache[key] = &faNext{states: []*faState{newState}}
+	return newState
 }

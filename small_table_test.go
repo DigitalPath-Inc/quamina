@@ -65,27 +65,40 @@ func TestUnpack(t *testing.T) {
 	}
 }
 
-func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int) {
+func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int, showMemoryAddress bool) {
 	if table == nil {
 		buf.WriteString(fmt.Sprintf("%s<nil>\n", strings.Repeat("  ", depth)))
 		return
 	}
 
 	indent := strings.Repeat("  ", depth)
-	buf.WriteString(fmt.Sprintf("%sceilings: %s\n", indent, formatCeilings(table.ceilings)))
-	buf.WriteString(fmt.Sprintf("%ssteps:\n", indent))
+	if showMemoryAddress {
+		buf.WriteString(fmt.Sprintf("%ssmallTable: %p\n", indent, table))
+	} else {
+		buf.WriteString(fmt.Sprintf("%ssmallTable:\n", indent))
+	}
+	buf.WriteString(fmt.Sprintf("%s  ceilings: %s\n", indent, formatCeilings(table.ceilings)))
+	buf.WriteString(fmt.Sprintf("%s  steps:\n", indent))
 	for i, step := range table.steps {
 		if step != nil {
-			buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
-			unravelFaNext(buf, step, depth+2)
+			if showMemoryAddress {
+				buf.WriteString(fmt.Sprintf("%s    %d: %p\n", indent, i, step))
+			} else {
+				buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
+			}
+			unravelFaNext(buf, step, depth+3, showMemoryAddress)
 		} else {
-			buf.WriteString(fmt.Sprintf("%s  %d: <nil>\n", indent, i))
+			buf.WriteString(fmt.Sprintf("%s    %d: <nil>\n", indent, i))
 		}
 	}
-	buf.WriteString(fmt.Sprintf("%sepsilon:\n", indent))
+	buf.WriteString(fmt.Sprintf("%s  epsilon:\n", indent))
 	for i, state := range table.epsilon {
-		buf.WriteString(fmt.Sprintf("%s  %d:\n", indent, i))
-		unravelFaState(buf, state, depth+2)
+		if showMemoryAddress {
+			buf.WriteString(fmt.Sprintf("%s    %d: %p\n", indent, i, state))
+		} else {
+			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
+		}
+		unravelFaState(buf, state, depth+3, showMemoryAddress)
 	}
 }
 

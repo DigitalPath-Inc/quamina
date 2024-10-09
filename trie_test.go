@@ -22,7 +22,8 @@ func TestTrieFromPatterns(t *testing.T) {
 	// }
 	// patterns[X("pattern_2")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
 	// patterns[X("pattern_3")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
-	patterns[X("pattern_0")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
+	// patterns[X("pattern_0")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
+	patterns[X("pattern_0")] = `{"field_0":[{"equals-ignore-case": "fOo"}]}`
 
 	fmt.Printf("Patterns: %v\n", patterns)
 
@@ -63,7 +64,8 @@ func TestMatcherFromPatterns(t *testing.T) {
 		{
 			name: "Different types of patterns",
 			patterns: map[X]string{
-				X("pattern_0"): `{"field_0":[{"prefix": "foo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
+				// X("pattern_0"): `{"field_0":[{"prefix": "foo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
+				X("pattern_1"): `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
 				// X("pattern_1"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
 				// X("pattern_1"): `{"field_0":["foo", "bar"]}`,
 				// X("pattern_1"): `{"field_0":[{"anything-but": ["baz", "qux"]}], "field_1":[{"wildcard": "a*f"}]}`,
@@ -94,8 +96,8 @@ func TestMatcherFromPatterns(t *testing.T) {
 				oldMatcher.addPattern(x, pattern)
 			}
 
-			t.Logf("Matcher: %v", unravelMatcher(matcher))
-			t.Logf("Old Matcher: %v", unravelMatcher(oldMatcher))
+			t.Logf("Matcher: %v", unravelMatcher(matcher, false))
+			t.Logf("Old Matcher: %v", unravelMatcher(oldMatcher, false))
 
 			// for i, event := range tc.events {
 			// 	matches, err := matcher.matchesForJSONEvent(event)

@@ -421,38 +421,60 @@ func TestMergeNfaAndNumeric(t *testing.T) {
 	}
 }
 
-func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int) {
+func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int, showMemoryAddress bool) {
 	indent := strings.Repeat("  ", depth)
 	fields := vm.fields()
 
+	if showMemoryAddress {
+		buf.WriteString(fmt.Sprintf("%svalueMatcher: %p\n", indent, vm))
+	} else {
+		buf.WriteString(fmt.Sprintf("%svalueMatcher:\n", indent))
+	}
+
 	if fields.startTable != nil {
-		buf.WriteString(fmt.Sprintf("%sstartTable:\n", indent))
-		buf.WriteString(fmt.Sprintf("%s  ceilings: %s\n", indent, formatCeilings(fields.startTable.ceilings)))
-		buf.WriteString(fmt.Sprintf("%s  steps:\n", indent))
+		if showMemoryAddress {
+			buf.WriteString(fmt.Sprintf("%s  startTable: %p\n", indent, fields.startTable))
+		} else {
+			buf.WriteString(fmt.Sprintf("%s  startTable:\n", indent))
+		}
+		buf.WriteString(fmt.Sprintf("%s    ceilings: %s\n", indent, formatCeilings(fields.startTable.ceilings)))
+		buf.WriteString(fmt.Sprintf("%s    steps:\n", indent))
 		for i, step := range fields.startTable.steps {
 			if step != nil {
-				buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
-				unravelFaNext(buf, step, depth+3)
+				if showMemoryAddress {
+					buf.WriteString(fmt.Sprintf("%s      %d: %p\n", indent, i, step))
+				} else {
+					buf.WriteString(fmt.Sprintf("%s      %d:\n", indent, i))
+				}
+				unravelFaNext(buf, step, depth+4, showMemoryAddress)
 			} else {
-				buf.WriteString(fmt.Sprintf("%s    %d: <nil>\n", indent, i))
+				buf.WriteString(fmt.Sprintf("%s      %d: <nil>\n", indent, i))
 			}
 		}
-		buf.WriteString(fmt.Sprintf("%s  epsilon:\n", indent))
+		buf.WriteString(fmt.Sprintf("%s    epsilon:\n", indent))
 		for i, state := range fields.startTable.epsilon {
-			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
-			unravelFaState(buf, state, depth+3)
+			if showMemoryAddress {
+				buf.WriteString(fmt.Sprintf("%s      %d: %p\n", indent, i, state))
+			} else {
+				buf.WriteString(fmt.Sprintf("%s      %d:\n", indent, i))
+			}
+			unravelFaState(buf, state, depth+4, showMemoryAddress)
 		}
 	}
 
 	if fields.singletonMatch != nil {
-		buf.WriteString(fmt.Sprintf("%ssingletonMatch: %s\n", indent, string(fields.singletonMatch)))
+		buf.WriteString(fmt.Sprintf("%s  singletonMatch: %s\n", indent, string(fields.singletonMatch)))
 	}
 
 	if fields.singletonTransition != nil {
-		buf.WriteString(fmt.Sprintf("%ssingletonTransition:\n", indent))
-		unravelFieldMatcher(buf, fields.singletonTransition, depth+1)
+		if showMemoryAddress {
+			buf.WriteString(fmt.Sprintf("%s  singletonTransition: %p\n", indent, fields.singletonTransition))
+		} else {
+			buf.WriteString(fmt.Sprintf("%s  singletonTransition:\n", indent))
+		}
+		unravelFieldMatcher(buf, fields.singletonTransition, depth+2, showMemoryAddress)
 	}
 
-	buf.WriteString(fmt.Sprintf("%shasNumbers: %v\n", indent, fields.hasNumbers))
-	buf.WriteString(fmt.Sprintf("%sisNondeterministic: %v\n", indent, fields.isNondeterministic))
+	buf.WriteString(fmt.Sprintf("%s  hasNumbers: %v\n", indent, fields.hasNumbers))
+	buf.WriteString(fmt.Sprintf("%s  isNondeterministic: %v\n", indent, fields.isNondeterministic))
 }
