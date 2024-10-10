@@ -2,7 +2,9 @@ package quamina
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,6 +20,84 @@ type trieNode struct {
 	isWildcard       bool
 	memberOfPatterns map[X]struct{}
 	transition       map[string]*pathTrie
+	hash             uint64
+}
+
+func (n *trieNode) generateHash() uint64 {
+	h := fnv.New64a()
+
+	// Hash basic properties
+	h.Write([]byte{btoi(n.isEnd), btoi(n.isWildcard)})
+
+	// Hash memberOfPatterns
+	if len(n.memberOfPatterns) > 0 {
+		patternKeys := make([]string, 0, len(n.memberOfPatterns))
+		for k := range n.memberOfPatterns {
+			patternKeys = append(patternKeys, k.(string))
+		}
+		if len(patternKeys) > 1 {
+			sort.Slice(patternKeys, func(i, j int) bool { return patternKeys[i] < patternKeys[j] })
+		}
+		for _, k := range patternKeys {
+			h.Write([]byte(k))
+		}
+	}
+
+	// Hash children (bottom-up)
+	if len(n.children) > 0 {
+		childKeys := make([]byte, 0, len(n.children))
+		for k := range n.children {
+			childKeys = append(childKeys, k)
+		}
+		if len(childKeys) > 1 {
+			sort.Slice(childKeys, func(i, j int) bool { return childKeys[i] < childKeys[j] })
+		}
+		for _, k := range childKeys {
+			h.Write([]byte{k})
+			childHash := n.children[k].generateHash() // Recursive call
+			h.Write([]byte(strconv.FormatUint(childHash, 10)))
+		}
+	}
+
+	// Hash transitions (bottom-up)
+	if len(n.transition) > 0 {
+		transitionKeys := make([]string, 0, len(n.transition))
+		for k := range n.transition {
+			transitionKeys = append(transitionKeys, k)
+		}
+		if len(transitionKeys) > 1 {
+			sort.Slice(transitionKeys, func(i, j int) bool { return transitionKeys[i] < transitionKeys[j] })
+		}
+		for _, k := range transitionKeys {
+			h.Write([]byte(k))
+			transitionHash := n.transition[k].node.generateHash() // Recursive call
+			h.Write([]byte(strconv.FormatUint(transitionHash, 10)))
+		}
+	}
+
+	n.hash = h.Sum64() // Store the computed hash
+	return n.hash
+}
+
+type stateCache struct {
+	cache map[uint64]*faNext
+}
+
+func (sc *stateCache) get(node *trieNode) (*faNext, bool) {
+	hash := node.hash
+	state, exists := sc.cache[hash]
+	return state, exists
+}
+
+func (sc *stateCache) set(node *trieNode, state *faNext) {
+	hash := node.hash
+	sc.cache[hash] = state
+}
+
+func newStateCache() *stateCache {
+	return &stateCache{
+		cache: make(map[uint64]*faNext),
+	}
 }
 
 func newPathTrie(path string) *pathTrie {
@@ -48,20 +128,17 @@ func (t *trieNode) insert(value []byte, x X) {
 }
 
 func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
-	// start := time.Now()
 	fields := make(map[string]struct{})
 	root, err := trieFromPatterns(patterns, &fields)
 	if err != nil {
 		return nil, err
 	}
-	// trieTime := time.Since(start)
-	// fmt.Printf("trieFromPatterns Time: %v\n", trieTime)
 
-	// start = time.Now()
 	cm := newCoreMatcher()
-	convertTrieToCoreMatcher(cm, root)
-	// convertTime := time.Since(start)
-	// fmt.Printf("convertTrieToCoreMatcher Time: %v\n", convertTime)
+	err = convertTrieToCoreMatcher(cm, root)
+	if err != nil {
+		return nil, err
+	}
 
 	segmentsTree := newSegmentsIndex()
 	for field := range fields {
@@ -72,9 +149,9 @@ func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
 	return cm, nil
 }
 
-func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*pathTrie, error) {
-	// start := time.Now()
-	var root *pathTrie
+// Modify the trieFromPatterns function to use the cache
+func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (map[string]*pathTrie, error) {
+	root := make(map[string]*pathTrie)
 
 	patternJSONTime := time.Duration(0)
 	buildTrieTime := time.Duration(0)
@@ -85,10 +162,6 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*p
 		patternJSONTime += time.Since(patternJSONStart)
 		if err != nil {
 			return nil, err
-		}
-
-		if root == nil {
-			root = newPathTrie(fields[0].path)
 		}
 
 		buildTrieStart := time.Now()
@@ -103,14 +176,16 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*p
 		}
 	}
 
-	// totalDuration := time.Since(start)
-	// fmt.Printf("trieFromPatterns total execution time: %v\n", totalDuration)
-	// fmt.Printf("patternFromJSON total time: %v\n", patternJSONTime)
-	// fmt.Printf("buildTrie total time: %v\n", buildTrieTime)
+	// Generate hash for each trie
+	for _, trie := range root {
+		trie.node.generateHash()
+	}
+
 	return root, nil
 }
 
-func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
+// Modify the buildTrie function to use the cache
+func buildTrie(root map[string]*pathTrie, fields []*patternField, x X) error {
 	if len(fields) == 0 {
 		return nil
 	}
@@ -118,23 +193,22 @@ func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
 	currentField := fields[0]
 	remainingFields := fields[1:]
 
+	// Create a new trie for the current field if it doesn't exist
+	if _, exists := root[currentField.path]; !exists {
+		root[currentField.path] = newPathTrie(currentField.path)
+	}
+
+	trie := root[currentField.path]
+
 	for _, val := range currentField.vals {
 		var err error
 		switch val.vType {
 		case stringType, literalType, numberType:
 			err = insertStringValue(trie, val.val, remainingFields, x)
-		// case existsTrueType, existsFalseType:
-		// 	err = insertExistsValue(trie, val.vType == existsTrueType, remainingFields, x)
-		// case shellStyleType:
-		// 	err = insertShellStyleValue(trie, val.val, remainingFields, x)
-		// case anythingButType:
-		// 	err = insertAnythingButValue(trie, val.list, remainingFields, x)
 		case prefixType:
 			err = insertPrefixValue(trie, val.val, remainingFields, x)
 		case monocaseType:
 			err = insertMonocaseValue(trie, val.val, remainingFields, x)
-		// case wildcardType:
-		// 	err = insertWildcardValue(trie, val.val, remainingFields, x)
 		default:
 			return fmt.Errorf("unknown value type: %v", val.vType)
 		}
@@ -143,9 +217,26 @@ func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
 		}
 	}
 
+	// If there are remaining fields, create a transition to the next field
+	if len(remainingFields) > 0 {
+		nextField := remainingFields[0]
+		if trie.node.transition == nil {
+			trie.node.transition = make(map[string]*pathTrie)
+		}
+		if _, exists := trie.node.transition[nextField.path]; !exists {
+			trie.node.transition[nextField.path] = newPathTrie(nextField.path)
+		}
+		// Change: Only recurse on the transition, not the root
+		err := buildTrie(trie.node.transition, remainingFields, x)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
+// Modify the insert functions to use the cache
 func insertStringValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
 	node := trie.node
 	for _, ch := range []byte(value) {
@@ -171,10 +262,9 @@ func insertStringValue(trie *pathTrie, value string, remainingFields []*patternF
 		if _, exists := node.transition[remainingFields[0].path]; !exists {
 			nextTrie := newPathTrie(remainingFields[0].path)
 			node.transition[remainingFields[0].path] = nextTrie
-			return buildTrie(nextTrie, remainingFields, x)
-		} else {
-			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
 		}
+		// Change: Use the transition map instead of creating a new root map
+		return buildTrie(node.transition, remainingFields, x)
 	}
 
 	return nil
@@ -182,6 +272,7 @@ func insertStringValue(trie *pathTrie, value string, remainingFields []*patternF
 
 func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
 	node := trie.node
+
 	for i := 0; i < len(value)-1; i++ { // Stop one short to skip the closing quote
 		ch := value[i]
 		if node.children == nil {
@@ -208,10 +299,8 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 		if _, exists := node.transition[remainingFields[0].path]; !exists {
 			nextTrie := newPathTrie(remainingFields[0].path)
 			node.transition[remainingFields[0].path] = nextTrie
-			return buildTrie(nextTrie, remainingFields, x)
-		} else {
-			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
 		}
+		return buildTrie(map[string]*pathTrie{remainingFields[0].path: node.transition[remainingFields[0].path]}, remainingFields, x)
 	}
 
 	return nil
@@ -245,7 +334,7 @@ func getAltPermutations(value string) []string {
 	return permutations
 }
 
-func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
+func convertTrieToCoreMatcher(cm *coreMatcher, root map[string]*pathTrie) error {
 	fields := cm.fields()
 	freshFields := &coreFields{
 		state:        fields.state,
@@ -256,25 +345,25 @@ func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
 	freshState := freshFields.state.fields()
 	freshState.transitions = make(map[string]*valueMatcher)
 
-	vm := newValueMatcher()
-	err := convertPathTrieToValueMatcher(root, vm)
-	if err != nil {
-		return err
-	}
-	freshState.transitions[root.path] = vm
+	sc := newStateCache()
 
-	// fmt.Printf("Root path: %s\n", root.path)
-	// fmt.Printf("ValueMatcher for root: %+v\n", vm)
+	for path, trie := range root {
+		vm := newValueMatcher()
+		err := convertPathTrieToValueMatcher(trie, vm, sc)
+		if err != nil {
+			return err
+		}
+		freshState.transitions[path] = vm
+	}
 
 	freshFields.state.update(freshState)
 	cm.updateable.Store(freshFields)
 
-	// fmt.Printf("CoreMatcher after conversion:\n%+v\n", cm)
 	return nil
 }
 
-func convertPathTrieToValueMatcher(pt *pathTrie, vm *valueMatcher) error {
-	err := convertTrieNodeToValueMatcher(pt.node, vm)
+func convertPathTrieToValueMatcher(pt *pathTrie, vm *valueMatcher, cache *stateCache) error {
+	err := convertTrieNodeToValueMatcher(pt.node, vm, cache)
 	if err != nil {
 		return err
 	}
@@ -282,10 +371,10 @@ func convertPathTrieToValueMatcher(pt *pathTrie, vm *valueMatcher) error {
 	return nil
 }
 
-func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher) error {
+func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher, cache *stateCache) error {
 	fields := vm.getFieldsForUpdate()
 
-	table, err := buildSmallTableFromTrie(node)
+	table, err := buildSmallTableFromTrie(node, cache)
 	if err != nil {
 		return err
 	}
@@ -295,20 +384,20 @@ func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher) error {
 	return nil
 }
 
-func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
+func buildSmallTableFromTrie(node *trieNode, cache *stateCache) (*smallTable, error) {
 	size := len(node.children) + len(node.transition)
 	states := make(map[byte]*faNext, size)
 
 	if node.isEnd || node.isWildcard {
-		createEndState(node, &states)
+		createEndState(node, &states, cache)
 	}
 
 	if len(node.transition) > 0 {
-		createTransitionState(node, &states)
+		createTransitionState(node, &states, cache)
 	}
 
 	for ch, child := range node.children {
-		nextState := getOrCreateState(child)
+		nextState := getOrCreateState(child, cache)
 		states[ch] = &faNext{states: []*faState{nextState}}
 	}
 
@@ -336,13 +425,8 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	return makeSmallTable(nil, bytes, steps), nil
 }
 
-type stateCache map[string]*faNext
-
-var globalStateCache = make(stateCache)
-
-func createEndState(node *trieNode, states *map[byte]*faNext) {
-	key := getStateKey(node)
-	if cachedState, exists := globalStateCache[key]; exists {
+func createEndState(node *trieNode, states *map[byte]*faNext, cache *stateCache) {
+	if cachedState, exists := cache.get(node); exists {
 		(*states)[valueTerminator] = cachedState
 		return
 	}
@@ -359,23 +443,24 @@ func createEndState(node *trieNode, states *map[byte]*faNext) {
 		endState.fieldTransitions = append(endState.fieldTransitions, fm)
 	}
 
-	globalStateCache[key] = &faNext{states: []*faState{endState}}
-	(*states)[valueTerminator] = globalStateCache[key]
+	nextState := &faNext{states: []*faState{endState}}
+	cache.set(node, nextState)
+	(*states)[valueTerminator] = nextState
 }
 
-func createTransitionState(node *trieNode, states *map[byte]*faNext) {
-	key := getStateKey(node)
-	if cachedState, exists := globalStateCache[key]; exists {
+func createTransitionState(node *trieNode, states *map[byte]*faNext, cache *stateCache) {
+	if cachedState, exists := cache.get(node); exists {
 		(*states)[valueTerminator] = cachedState
 		return
 	}
 
-	transitionState, _ := handleTransitions(node.transition)
-	globalStateCache[key] = &faNext{states: []*faState{transitionState}}
-	(*states)[valueTerminator] = globalStateCache[key]
+	transitionState, _ := handleTransitions(node.transition, cache)
+	nextState := &faNext{states: []*faState{transitionState}}
+	cache.set(node, nextState)
+	(*states)[valueTerminator] = nextState
 }
 
-func createWildcardState(node *trieNode, nextState *faState) error {
+func createWildcardState(node *trieNode, nextState *faState, cache *stateCache) error {
 	for x := range node.memberOfPatterns {
 		fm := newFieldMatcher()
 		fm.addMatch(x)
@@ -383,7 +468,7 @@ func createWildcardState(node *trieNode, nextState *faState) error {
 	}
 
 	if len(node.transition) > 0 {
-		transitionState, err := handleTransitions(node.transition)
+		transitionState, err := handleTransitions(node.transition, cache)
 		if err != nil {
 			return err
 		}
@@ -393,42 +478,66 @@ func createWildcardState(node *trieNode, nextState *faState) error {
 	return nil
 }
 
-func getStateKey(node *trieNode) string {
+func getStateKey(node *trieNode, depth int) string {
 	var key strings.Builder
+	key.Grow(64) // Pre-allocate some space to reduce allocations
 
 	// Add basic properties
-	key.WriteString(fmt.Sprintf("end:%v|wildcard:%v|", node.isEnd, node.isWildcard))
+	key.WriteString("e:")
+	key.WriteByte('0' + btoi(node.isEnd))
+	key.WriteString("|w:")
+	key.WriteByte('0' + btoi(node.isWildcard))
+	key.WriteByte('|')
 
 	// Add patterns
-	patterns := make([]string, 0, len(node.memberOfPatterns))
-	for x := range node.memberOfPatterns {
-		patterns = append(patterns, x.(string))
+	if len(node.memberOfPatterns) > 0 {
+		key.WriteString("p:")
+		patterns := make([]string, 0, len(node.memberOfPatterns))
+		for x := range node.memberOfPatterns {
+			patterns = append(patterns, x.(string))
+		}
+		sort.Strings(patterns)
+		key.WriteString(strings.Join(patterns, ","))
+		key.WriteByte('|')
 	}
-	sort.Strings(patterns)
-	key.WriteString(fmt.Sprintf("patterns:%v|", patterns))
 
-	// Add children
-	childKeys := make([]string, 0, len(node.children))
-	for ch, child := range node.children {
-		childKey := fmt.Sprintf("%d:%s", ch, getStateKey(child))
-		childKeys = append(childKeys, childKey)
+	// Add children (with limited depth)
+	if len(node.children) > 0 && depth > 0 {
+		key.WriteString("c:")
+		childKeys := make([]string, 0, len(node.children))
+		for ch, child := range node.children {
+			childKey := fmt.Sprintf("%d:%s", ch, getStateKey(child, depth-1))
+			childKeys = append(childKeys, childKey)
+		}
+		sort.Strings(childKeys)
+		key.WriteString(strings.Join(childKeys, ","))
+		key.WriteByte('|')
 	}
-	sort.Strings(childKeys)
-	key.WriteString(fmt.Sprintf("children:%v|", childKeys))
 
-	// Add transitions
-	transitions := make([]string, 0, len(node.transition))
-	for t, pathTrie := range node.transition {
-		transitionKey := fmt.Sprintf("%s:%s", t, getStateKey(pathTrie.node))
-		transitions = append(transitions, transitionKey)
+	// Add transitions (with limited depth)
+	if len(node.transition) > 0 && depth > 0 {
+		key.WriteString("t:")
+		transitions := make([]string, 0, len(node.transition))
+		for t, pathTrie := range node.transition {
+			transitionKey := fmt.Sprintf("%s:%s", t, getStateKey(pathTrie.node, depth-1))
+			transitions = append(transitions, transitionKey)
+		}
+		sort.Strings(transitions)
+		key.WriteString(strings.Join(transitions, ","))
 	}
-	sort.Strings(transitions)
-	key.WriteString(fmt.Sprintf("transitions:%v", transitions))
 
 	return key.String()
 }
 
-func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
+// Helper function to convert bool to int
+func btoi(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func handleTransitions(transitions map[string]*pathTrie, cache *stateCache) (*faState, error) {
 	transitionVMs := make(map[string]*valueMatcher)
 	nextState := &faState{
 		table:            newSmallTable(),
@@ -437,7 +546,7 @@ func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
 
 	for nextFieldPath, transitionNode := range transitions {
 		nextVM := newValueMatcher()
-		err := convertPathTrieToValueMatcher(transitionNode, nextVM)
+		err := convertPathTrieToValueMatcher(transitionNode, nextVM, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -455,9 +564,8 @@ func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
 	return nextState, nil
 }
 
-func getOrCreateState(node *trieNode) *faState {
-	key := getStateKey(node)
-	if cachedState, exists := globalStateCache[key]; exists {
+func getOrCreateState(node *trieNode, cache *stateCache) *faState {
+	if cachedState, exists := cache.get(node); exists {
 		return cachedState.states[0]
 	}
 
@@ -466,12 +574,12 @@ func getOrCreateState(node *trieNode) *faState {
 	}
 
 	if node.isWildcard {
-		createWildcardState(node, newState)
+		createWildcardState(node, newState, cache)
 	} else {
-		childTable, _ := buildSmallTableFromTrie(node)
+		childTable, _ := buildSmallTableFromTrie(node, cache)
 		newState.table = childTable
 	}
 
-	globalStateCache[key] = &faNext{states: []*faState{newState}}
+	cache.set(node, &faNext{states: []*faState{newState}})
 	return newState
 }
