@@ -179,6 +179,7 @@ func getPatternStrings(matches []X) string {
 func sanitizeMermaidLabel(label string) string {
 	label = strings.ReplaceAll(label, "#", "special-#")
 	label = strings.ReplaceAll(label, "\"", "QUOTE")
+	label = strings.ReplaceAll(label, "`", "TICK")
 	return label
 }
 

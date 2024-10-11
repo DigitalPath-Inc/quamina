@@ -69,10 +69,10 @@ func TestTrieFromPatterns(t *testing.T) {
 	// patterns[X("pattern_0")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
 	// patterns[X("pattern_1")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
 	// patterns[X("pattern_2")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
-	// patterns[X("pattern_3")] = `{"field_0":[{"equals-ignore-case": "fOo"}]}`
-	patterns[X("pattern_4")] = `{"field_0":["aaaa", "abaa"], "field_1":["cccc", "cbaa"]}`
-	patterns[X("pattern_5")] = `{"field_1":["bbbb", "bbaa"]}`
-	// patterns[X("pattern_6")] = `{"field_1":[{"prefix": "bbaa"}]}`
+	patterns[X("pattern_3")] = `{"field_0":[{"equals-ignore-case": "fOo"}]}`
+	// patterns[X("pattern_4")] = `{"field_0":["aaaa", "abaa"], "field_1":["cccc", "cbaa"]}`
+	// patterns[X("pattern_5")] = `{"field_1":["bbbb", "bbaa"]}`
+	patterns[X("pattern_6")] = `{"field_1":[{"prefix": "bbaa"}]}`
 	// patterns[X("pattern_7")] = `{"field_1":["bbbbb", "bbaa"]}`
 
 	fmt.Printf("Patterns: %v\n", patterns)
@@ -96,47 +96,47 @@ func TestMatcherFromPatterns(t *testing.T) {
 		events   [][]byte
 		expected [][]X
 	}{
-		{
-			name: "Multiple events and matches",
-			patterns: map[X]string{
-				X("pattern_0"): `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`,
-				X("pattern_1"): `{"field_0":["baz", "qux"], "field_1":["asdf", "zxcv"]}`,
-			},
-			events: [][]byte{
-				[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
-				[]byte(`{"field_0": "baz", "field_1": "asdf"}`),
-				[]byte(`{"field_0": "foo", "field_1": "zxcv"}`),
-			},
-			expected: [][]X{
-				{X("pattern_0")},
-				{X("pattern_1")},
-				{},
-			},
-		},
 		// {
-		// 	name: "Different types of patterns",
+		// 	name: "Multiple events and matches",
 		// 	patterns: map[X]string{
-		// 		// X("pattern_0"): `{"field_0":[{"prefix": "bar"}], "field_1":["foo", {"prefix": "bar"}, "baz", {"equals-ignore-case": "pReSeNt"}]}`,
-		// 		// X("pattern_1"): `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
-		// 		// X("pattern_2"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
-		// 		X("pattern_3"): `{"field_0":["foo", "bar"]}`,
-		// 		X("pattern_4"): `{"field_1":["foo", "bar"]}`,
-		// 		// X("pattern_4"): `{"field_0":[{"anything-but": ["baz", "qux"]}], "field_1":[{"wildcard": "a*f"}]}`,
-		// 		// X("pattern_5"): `{"field_0":[{"equals-ignore-case": "Hello"}], "field_1":[{"wildcard": "*.jpg"}]}`,
+		// 		X("pattern_0"): `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`,
+		// 		X("pattern_1"): `{"field_0":["baz", "qux"], "field_1":["asdf", "zxcv"]}`,
 		// 	},
 		// 	events: [][]byte{
 		// 		[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
-		// 		[]byte(`{"field_0": "barcode", "field_1": "bar"}`),
-		// 		[]byte(`{"field_0": "hello", "field_1": "image.jpg"}`),
-		// 		[]byte(`{"field_0": "baz", "field_1": "abcf"}`),
+		// 		[]byte(`{"field_0": "baz", "field_1": "asdf"}`),
+		// 		[]byte(`{"field_0": "foo", "field_1": "zxcv"}`),
 		// 	},
 		// 	expected: [][]X{
-		// 		{X("pattern_3")},
-		// 		{X("pattern_4")},
-		// 		{},
+		// 		{X("pattern_0")},
+		// 		{X("pattern_1")},
 		// 		{},
 		// 	},
 		// },
+		{
+			name: "Different types of patterns",
+			patterns: map[X]string{
+				// X("pattern_0"): `{"field_0":[{"prefix": "bar"}], "field_1":["foo", {"prefix": "bar"}, "baz", {"equals-ignore-case": "pReSeNt"}]}`,
+				// X("pattern_1"): `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
+				// X("pattern_2"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
+				X("pattern_3"): `{"field_0":["foo", "bar"]}`,
+				X("pattern_4"): `{"field_1":["foo", "bar"]}`,
+				// X("pattern_4"): `{"field_0":[{"anything-but": ["baz", "qux"]}], "field_1":[{"wildcard": "a*f"}]}`,
+				// X("pattern_5"): `{"field_0":[{"equals-ignore-case": "Hello"}], "field_1":[{"wildcard": "*.jpg"}]}`,
+			},
+			events: [][]byte{
+				[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
+				[]byte(`{"field_0": "barcode", "field_1": "bar"}`),
+				[]byte(`{"field_0": "hello", "field_1": "image.jpg"}`),
+				[]byte(`{"field_0": "baz", "field_1": "abcf"}`),
+			},
+			expected: [][]X{
+				{X("pattern_3")},
+				{X("pattern_4")},
+				{},
+				{},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -153,6 +153,7 @@ func TestMatcherFromPatterns(t *testing.T) {
 			t.Logf("Matcher:\n%v", visualizer.visualize(matcher))
 
 			for i, event := range tc.events {
+				t.Logf("Testing Event: %v", string(event))
 				matches, err := matcher.matchesForJSONEvent(event)
 				assert.NoError(t, err)
 				oldMatches, err := oldMatcher.matchesForJSONEvent(event)

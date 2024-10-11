@@ -229,25 +229,7 @@ func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
 	remainingFields := fields[1:]
 
 	for _, val := range currentField.vals {
-		var err error
-		switch val.vType {
-		case stringType, literalType, numberType:
-			err = insertStringValue(trie, val.val, remainingFields, x)
-		// case existsTrueType, existsFalseType:
-		// 	err = insertExistsValue(trie, val.vType == existsTrueType, remainingFields, x)
-		// case shellStyleType:
-		// 	err = insertShellStyleValue(trie, val.val, remainingFields, x)
-		// case anythingButType:
-		// 	err = insertAnythingButValue(trie, val.list, remainingFields, x)
-		case prefixType:
-			err = insertPrefixValue(trie, val.val, remainingFields, x)
-		case monocaseType:
-			err = insertMonocaseValue(trie, val.val, remainingFields, x)
-		// case wildcardType:
-		// 	err = insertWildcardValue(trie, val.val, remainingFields, x)
-		default:
-			return fmt.Errorf("unknown value type: %v", val.vType)
-		}
+		err := insertValue(trie, val, remainingFields, x)
 		if err != nil {
 			return err
 		}
@@ -256,18 +238,33 @@ func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
 	return nil
 }
 
-func insertStringValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
-	node := trie.node
-	for _, ch := range []byte(value) {
-		if node.children == nil {
-			node.children = make(map[byte]*trieNode)
-		}
-		if _, exists := node.children[ch]; !exists {
-			node.children[ch] = newTrie()
-		}
-		node = node.children[ch]
+func insertValue(trie *pathTrie, val typedVal, remainingFields []*patternField, x X) error {
+	var err error
+	switch val.vType {
+	case stringType, literalType, numberType:
+		err = insertStringValue(trie, val.val, remainingFields, x)
+	// case existsTrueType, existsFalseType:
+	// 	err = insertExistsValue(trie, val.vType == existsTrueType, remainingFields, x)
+	// case shellStyleType:
+	// 	err = insertShellStyleValue(trie, val.val, remainingFields, x)
+	// case anythingButType:
+	// 	err = insertAnythingButValue(trie, val.list, remainingFields, x)
+	case prefixType:
+		err = insertPrefixValue(trie, val.val, remainingFields, x)
+	case monocaseType:
+		err = insertMonocaseValue(trie, val.val, remainingFields, x)
+	// case wildcardType:
+	// 	err = insertWildcardValue(trie, val.val, remainingFields, x)
+	default:
+		return fmt.Errorf("unknown value type: %v", val.vType)
 	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
+func handleTransition(trie *pathTrie, node *trieNode, remainingFields []*patternField, x X) error {
 	if len(remainingFields) == 0 {
 		node.isEnd = true
 		if node.memberOfPatterns == nil {
@@ -285,6 +282,25 @@ func insertStringValue(trie *pathTrie, value string, remainingFields []*patternF
 		} else {
 			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
 		}
+	}
+	return nil
+}
+
+func insertStringValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
+	node := trie.node
+	for _, ch := range []byte(value) {
+		if node.children == nil {
+			node.children = make(map[byte]*trieNode)
+		}
+		if _, exists := node.children[ch]; !exists {
+			node.children[ch] = newTrie()
+		}
+		node = node.children[ch]
+	}
+
+	err := handleTransition(trie, node, remainingFields, x)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -306,22 +322,9 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 	// Mark the last node as a prefix end
 	node.isWildcard = true
 
-	if len(remainingFields) == 0 {
-		if node.memberOfPatterns == nil {
-			node.memberOfPatterns = make(map[X]struct{})
-		}
-		node.memberOfPatterns[x] = struct{}{}
-	} else {
-		if node.transition == nil {
-			node.transition = make(map[string]*pathTrie)
-		}
-		if _, exists := node.transition[remainingFields[0].path]; !exists {
-			nextTrie := newPathTrie(remainingFields[0].path)
-			node.transition[remainingFields[0].path] = nextTrie
-			return buildTrie(nextTrie, remainingFields, x)
-		} else {
-			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
-		}
+	err := handleTransition(trie, node, remainingFields, x)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -330,29 +333,38 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 // insertMonocaseValue uses the same logic as insertStringValue but handles case folding. It basically generates two paths for each rune in the value
 // and adds them to the trie. We first generate all the permutations of the value, then add each as a trie
 func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
-	permutations := getAltPermutations(value)
-	for _, perm := range permutations {
-		err := insertStringValue(trie, perm, remainingFields, x)
+	nodes := []*trieNode{trie.node}
+	children := make(map[byte]*trieNode)
+	for _, r := range value {
+		if alt, exists := caseFoldingPairs[r]; exists {
+			node := newTrie()
+			children[byte(alt)] = node
+		}
+		node := newTrie()
+		children[byte(r)] = node
+
+		for _, node := range nodes {
+			node.children = children
+
+		}
+		newNodes := make([]*trieNode, len(children))
+		i := 0
+		for _, n := range children {
+			newNodes[i] = n
+			i++
+		}
+		nodes = newNodes
+		children = make(map[byte]*trieNode)
+	}
+
+	for _, node := range nodes {
+		err := handleTransition(trie, node, remainingFields, x)
 		if err != nil {
 			return err
 		}
 	}
-	return nil
-}
 
-func getAltPermutations(value string) []string {
-	permutations := []string{value}
-	for i, r := range value {
-		if altRune, ok := caseFoldingPairs[r]; ok {
-			newPermutations := make([]string, len(permutations))
-			for j, perm := range permutations {
-				newPerm := perm[:i] + string(altRune) + perm[i+1:]
-				newPermutations[j] = newPerm
-			}
-			permutations = append(permutations, newPermutations...)
-		}
-	}
-	return permutations
+	return nil
 }
 
 func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
