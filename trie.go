@@ -180,9 +180,9 @@ func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
 	return cm, nil
 }
 
-func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*pathTrie, error) {
+func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (map[string]*pathTrie, error) {
 	// start := time.Now()
-	var root *pathTrie
+	root := make(map[string]*pathTrie)
 
 	patternJSONTime := time.Duration(0)
 	buildTrieTime := time.Duration(0)
@@ -193,10 +193,6 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*p
 		patternJSONTime += time.Since(patternJSONStart)
 		if err != nil {
 			return nil, err
-		}
-
-		if root == nil {
-			root = newPathTrie(fields[0].path)
 		}
 
 		buildTrieStart := time.Now()
@@ -211,7 +207,9 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*p
 		}
 	}
 
-	root.generateHash()
+	for _, trie := range root {
+		trie.generateHash()
+	}
 
 	// totalDuration := time.Since(start)
 	// fmt.Printf("trieFromPatterns total execution time: %v\n", totalDuration)
@@ -220,13 +218,19 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*p
 	return root, nil
 }
 
-func buildTrie(trie *pathTrie, fields []*patternField, x X) error {
+func buildTrie(root map[string]*pathTrie, fields []*patternField, x X) error {
 	if len(fields) == 0 {
 		return nil
 	}
 
 	currentField := fields[0]
 	remainingFields := fields[1:]
+
+	if _, exists := root[currentField.path]; !exists {
+		root[currentField.path] = newPathTrie(currentField.path)
+	}
+
+	trie := root[currentField.path]
 
 	for _, val := range currentField.vals {
 		err := insertValue(trie, val, remainingFields, x)
@@ -275,13 +279,7 @@ func handleTransition(trie *pathTrie, node *trieNode, remainingFields []*pattern
 		if node.transition == nil {
 			node.transition = make(map[string]*pathTrie)
 		}
-		if _, exists := node.transition[remainingFields[0].path]; !exists {
-			nextTrie := newPathTrie(remainingFields[0].path)
-			node.transition[remainingFields[0].path] = nextTrie
-			return buildTrie(nextTrie, remainingFields, x)
-		} else {
-			return buildTrie(node.transition[remainingFields[0].path], remainingFields, x)
-		}
+		return buildTrie(node.transition, remainingFields, x)
 	}
 	return nil
 }
@@ -367,7 +365,7 @@ func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patter
 	return nil
 }
 
-func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
+func convertTrieToCoreMatcher(cm *coreMatcher, root map[string]*pathTrie) error {
 	fields := cm.fields()
 	freshFields := &coreFields{
 		state:        fields.state,
@@ -378,12 +376,14 @@ func convertTrieToCoreMatcher(cm *coreMatcher, root *pathTrie) error {
 	freshState := freshFields.state.fields()
 	freshState.transitions = make(map[string]*valueMatcher)
 
-	vm := newValueMatcher()
-	err := convertPathTrieToValueMatcher(root, vm)
-	if err != nil {
-		return err
+	for path, trie := range root {
+		vm := newValueMatcher()
+		err := convertPathTrieToValueMatcher(trie, vm)
+		if err != nil {
+			return err
+		}
+		freshState.transitions[path] = vm
 	}
-	freshState.transitions[root.path] = vm
 
 	// fmt.Printf("Root path: %s\n", root.path)
 	// fmt.Printf("ValueMatcher for root: %+v\n", vm)

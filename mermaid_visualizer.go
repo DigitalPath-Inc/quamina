@@ -21,6 +21,12 @@ func newMermaidVisualizer() *mermaidVisualizer {
 	}
 }
 
+func (mv *mermaidVisualizer) reset() {
+	mv.buf.Reset()
+	mv.visitedNodes = make(map[uintptr]string)
+	mv.visitedLinks = make(map[string]bool)
+}
+
 func (mv *mermaidVisualizer) visualize(node interface{}) string {
 	mv.buf.WriteString("graph TD\n")
 	mv.visualizeNode(node, "")
