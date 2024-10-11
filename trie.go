@@ -3,7 +3,6 @@ package quamina
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -18,6 +17,115 @@ type trieNode struct {
 	isWildcard       bool
 	memberOfPatterns map[X]struct{}
 	transition       map[string]*pathTrie
+	hash             uint64
+}
+
+func (t *pathTrie) generateHash() uint64 {
+	if t.node == nil {
+		return 0
+	}
+
+	var hash uint64 = 5381 // Initial value for DJB2 hash algorithm
+
+	// Hash the path
+	for _, ch := range t.path {
+		hash = ((hash << 5) + hash) + uint64(ch)
+	}
+
+	// Hash the node
+	nodeHash := t.node.generateHash()
+	hash = ((hash << 5) + hash) + nodeHash
+
+	t.node.hash = hash // Store the hash in the node
+	return hash
+}
+
+func (t *trieNode) generateHash() uint64 {
+	if t.hash != 0 {
+		return t.hash // Return cached hash if available
+	}
+
+	var hash uint64 = 5381 // Initial value for DJB2 hash algorithm
+
+	// Hash children
+	childKeys := make([]byte, 0, len(t.children))
+	for ch := range t.children {
+		childKeys = append(childKeys, ch)
+	}
+	if len(childKeys) < 20 {
+		// Use insertion sort for small slices
+		for i := 1; i < len(childKeys); i++ {
+			for j := i; j > 0 && childKeys[j] < childKeys[j-1]; j-- {
+				childKeys[j], childKeys[j-1] = childKeys[j-1], childKeys[j]
+			}
+		}
+	} else {
+		sort.Slice(childKeys, func(i, j int) bool { return childKeys[i] < childKeys[j] })
+	}
+
+	for _, ch := range childKeys {
+		child := t.children[ch]
+		childHash := child.generateHash()
+		hash = ((hash << 5) + hash) + uint64(ch)
+		hash = ((hash << 5) + hash) + childHash
+	}
+
+	// Hash isEnd and isWildcard
+	if t.isEnd {
+		hash = ((hash << 5) + hash) + 1
+	}
+	if t.isWildcard {
+		hash = ((hash << 5) + hash) + 1
+	}
+
+	// Hash memberOfPatterns
+	patternKeys := make([]string, 0, len(t.memberOfPatterns))
+	for x := range t.memberOfPatterns {
+		patternKeys = append(patternKeys, x.(string))
+	}
+	if len(patternKeys) < 20 {
+		// Use insertion sort for small slices
+		for i := 1; i < len(patternKeys); i++ {
+			for j := i; j > 0 && patternKeys[j] < patternKeys[j-1]; j-- {
+				patternKeys[j], patternKeys[j-1] = patternKeys[j-1], patternKeys[j]
+			}
+		}
+	} else {
+		sort.Strings(patternKeys)
+	}
+
+	for _, x := range patternKeys {
+		for _, ch := range x {
+			hash = ((hash << 5) + hash) + uint64(ch)
+		}
+	}
+
+	// Hash transitions
+	transitionKeys := make([]string, 0, len(t.transition))
+	for path := range t.transition {
+		transitionKeys = append(transitionKeys, path)
+	}
+	if len(transitionKeys) < 20 {
+		// Use insertion sort for small slices
+		for i := 1; i < len(transitionKeys); i++ {
+			for j := i; j > 0 && transitionKeys[j] < transitionKeys[j-1]; j-- {
+				transitionKeys[j], transitionKeys[j-1] = transitionKeys[j-1], transitionKeys[j]
+			}
+		}
+	} else {
+		sort.Strings(transitionKeys)
+	}
+
+	for _, path := range transitionKeys {
+		pathTrie := t.transition[path]
+		for _, ch := range path {
+			hash = ((hash << 5) + hash) + uint64(ch)
+		}
+		hash = ((hash << 5) + hash) + pathTrie.generateHash()
+	}
+
+	t.hash = hash // Cache the computed hash
+	return hash
 }
 
 func newPathTrie(path string) *pathTrie {
@@ -102,6 +210,8 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (*p
 			(*allFields)[field.path] = struct{}{}
 		}
 	}
+
+	root.generateHash()
 
 	// totalDuration := time.Since(start)
 	// fmt.Printf("trieFromPatterns total execution time: %v\n", totalDuration)
@@ -336,7 +446,7 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	return makeSmallTable(nil, bytes, steps), nil
 }
 
-type stateCache map[string]*faNext
+type stateCache map[uint64]*faNext
 
 var globalStateCache = make(stateCache)
 
@@ -393,39 +503,40 @@ func createWildcardState(node *trieNode, nextState *faState) error {
 	return nil
 }
 
-func getStateKey(node *trieNode) string {
-	var key strings.Builder
+func getStateKey(node *trieNode) uint64 {
+	return node.hash
+	// var key strings.Builder
 
-	// Add basic properties
-	key.WriteString(fmt.Sprintf("end:%v|wildcard:%v|", node.isEnd, node.isWildcard))
+	// // Add basic properties
+	// key.WriteString(fmt.Sprintf("end:%v|wildcard:%v|", node.isEnd, node.isWildcard))
 
-	// Add patterns
-	patterns := make([]string, 0, len(node.memberOfPatterns))
-	for x := range node.memberOfPatterns {
-		patterns = append(patterns, x.(string))
-	}
-	sort.Strings(patterns)
-	key.WriteString(fmt.Sprintf("patterns:%v|", patterns))
+	// // Add patterns
+	// patterns := make([]string, 0, len(node.memberOfPatterns))
+	// for x := range node.memberOfPatterns {
+	// 	patterns = append(patterns, x.(string))
+	// }
+	// sort.Strings(patterns)
+	// key.WriteString(fmt.Sprintf("patterns:%v|", patterns))
 
-	// Add children
-	childKeys := make([]string, 0, len(node.children))
-	for ch, child := range node.children {
-		childKey := fmt.Sprintf("%d:%s", ch, getStateKey(child))
-		childKeys = append(childKeys, childKey)
-	}
-	sort.Strings(childKeys)
-	key.WriteString(fmt.Sprintf("children:%v|", childKeys))
+	// // Add children
+	// childKeys := make([]string, 0, len(node.children))
+	// for ch, child := range node.children {
+	// 	childKey := fmt.Sprintf("%d:%s", ch, getStateKey(child))
+	// 	childKeys = append(childKeys, childKey)
+	// }
+	// sort.Strings(childKeys)
+	// key.WriteString(fmt.Sprintf("children:%v|", childKeys))
 
-	// Add transitions
-	transitions := make([]string, 0, len(node.transition))
-	for t, pathTrie := range node.transition {
-		transitionKey := fmt.Sprintf("%s:%s", t, getStateKey(pathTrie.node))
-		transitions = append(transitions, transitionKey)
-	}
-	sort.Strings(transitions)
-	key.WriteString(fmt.Sprintf("transitions:%v", transitions))
+	// // Add transitions
+	// transitions := make([]string, 0, len(node.transition))
+	// for t, pathTrie := range node.transition {
+	// 	transitionKey := fmt.Sprintf("%s:%s", t, getStateKey(pathTrie.node))
+	// 	transitions = append(transitions, transitionKey)
+	// }
+	// sort.Strings(transitions)
+	// key.WriteString(fmt.Sprintf("transitions:%v", transitions))
 
-	return key.String()
+	// return key.String()
 }
 
 func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {

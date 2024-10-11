@@ -11,6 +11,51 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestHashPathTrie(t *testing.T) {
+	testCases := []struct {
+		name     string
+		trie     *pathTrie
+		expected uint64
+	}{
+		{
+			name: "Empty trie",
+			trie: &pathTrie{
+				path: "field_0",
+				node: &trieNode{
+					children: map[byte]*trieNode{
+						'a': {
+							transition: map[string]*pathTrie{
+								"field_1": {
+									path: "field_1",
+									node: &trieNode{
+										children: map[byte]*trieNode{
+											'b': {
+												isEnd: true,
+												memberOfPatterns: map[X]struct{}{
+													X("pattern_0"): {},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: 5381, // Initial hash value
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := tc.trie.generateHash()
+			assert.Equal(t, tc.expected, result, "Hash mismatch for %s", tc.name)
+		})
+	}
+
+}
+
 func TestTrieFromPatterns(t *testing.T) {
 	// patternsJSON := generatePatterns(2, 2, 2)
 	// patternsJSON := []string{
@@ -21,14 +66,14 @@ func TestTrieFromPatterns(t *testing.T) {
 	// for i, pattern := range patternsJSON {
 	// 	patterns[X(fmt.Sprintf("pattern_%d", i))] = pattern
 	// }
-	patterns[X("pattern_0")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
-	patterns[X("pattern_1")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
-	patterns[X("pattern_2")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
-	patterns[X("pattern_3")] = `{"field_0":[{"equals-ignore-case": "fOo"}]}`
+	// patterns[X("pattern_0")] = `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`
+	// patterns[X("pattern_1")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
+	// patterns[X("pattern_2")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
+	// patterns[X("pattern_3")] = `{"field_0":[{"equals-ignore-case": "fOo"}]}`
 	patterns[X("pattern_4")] = `{"field_0":["aaaa", "abaa"], "field_1":["cccc", "cbaa"]}`
 	patterns[X("pattern_5")] = `{"field_1":["bbbb", "bbaa"]}`
-	patterns[X("pattern_6")] = `{"field_1":[{"prefix": "bbaa"}]}`
-	patterns[X("pattern_7")] = `{"field_1":["bbbbb", "bbaa"]}`
+	// patterns[X("pattern_6")] = `{"field_1":[{"prefix": "bbaa"}]}`
+	// patterns[X("pattern_7")] = `{"field_1":["bbbbb", "bbaa"]}`
 
 	fmt.Printf("Patterns: %v\n", patterns)
 
@@ -40,9 +85,8 @@ func TestTrieFromPatterns(t *testing.T) {
 	}
 	t.Logf("Time to build trie: %v", time.Since(start))
 
-	t.Logf("Trie:\n%v", visualizePathTrie(tries["field_0"]))
-	t.Logf("Trie:\n%v", visualizePathTrie(tries["field_1"]))
-	t.Logf("Mermaid Diagram for all tries:\n%v", visualizeTriesAsMermaid(tries))
+	t.Logf("Trie:\n%v", visualizePathTrie(tries))
+	t.Logf("Mermaid Diagram for all tries:\n%v", visualizeTriesAsMermaid(map[string]*pathTrie{tries.path: tries}))
 }
 
 func TestMatcherFromPatterns(t *testing.T) {
@@ -52,47 +96,47 @@ func TestMatcherFromPatterns(t *testing.T) {
 		events   [][]byte
 		expected [][]X
 	}{
-		// {
-		// 	name: "Multiple events and matches",
-		// 	patterns: map[X]string{
-		// 		X("pattern_0"): `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`,
-		// 		X("pattern_1"): `{"field_0":["baz", "qux"], "field_1":["asdf", "zxcv"]}`,
-		// 	},
-		// 	events: [][]byte{
-		// 		[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
-		// 		[]byte(`{"field_0": "baz", "field_1": "asdf"}`),
-		// 		[]byte(`{"field_0": "foo", "field_1": "zxcv"}`),
-		// 	},
-		// 	expected: [][]X{
-		// 		{X("pattern_0")},
-		// 		{X("pattern_1")},
-		// 		{},
-		// 	},
-		// },
 		{
-			name: "Different types of patterns",
+			name: "Multiple events and matches",
 			patterns: map[X]string{
-				// X("pattern_0"): `{"field_0":[{"prefix": "bar"}], "field_1":["foo", {"prefix": "bar"}, "baz", {"equals-ignore-case": "pReSeNt"}]}`,
-				// X("pattern_1"): `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
-				// X("pattern_2"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
-				X("pattern_3"): `{"field_0":["foo", "bar"]}`,
-				X("pattern_4"): `{"field_1":["foo", "bar"]}`,
-				// X("pattern_4"): `{"field_0":[{"anything-but": ["baz", "qux"]}], "field_1":[{"wildcard": "a*f"}]}`,
-				// X("pattern_5"): `{"field_0":[{"equals-ignore-case": "Hello"}], "field_1":[{"wildcard": "*.jpg"}]}`,
+				X("pattern_0"): `{"field_0":["foo", "bar"], "field_1":["asdf", "qwer"]}`,
+				X("pattern_1"): `{"field_0":["baz", "qux"], "field_1":["asdf", "zxcv"]}`,
 			},
 			events: [][]byte{
 				[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
-				[]byte(`{"field_0": "barcode", "field_1": "bar"}`),
-				[]byte(`{"field_0": "hello", "field_1": "image.jpg"}`),
-				[]byte(`{"field_0": "baz", "field_1": "abcf"}`),
+				[]byte(`{"field_0": "baz", "field_1": "asdf"}`),
+				[]byte(`{"field_0": "foo", "field_1": "zxcv"}`),
 			},
 			expected: [][]X{
-				{X("pattern_3")},
-				{X("pattern_4")},
-				{},
+				{X("pattern_0")},
+				{X("pattern_1")},
 				{},
 			},
 		},
+		// {
+		// 	name: "Different types of patterns",
+		// 	patterns: map[X]string{
+		// 		// X("pattern_0"): `{"field_0":[{"prefix": "bar"}], "field_1":["foo", {"prefix": "bar"}, "baz", {"equals-ignore-case": "pReSeNt"}]}`,
+		// 		// X("pattern_1"): `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
+		// 		// X("pattern_2"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
+		// 		X("pattern_3"): `{"field_0":["foo", "bar"]}`,
+		// 		X("pattern_4"): `{"field_1":["foo", "bar"]}`,
+		// 		// X("pattern_4"): `{"field_0":[{"anything-but": ["baz", "qux"]}], "field_1":[{"wildcard": "a*f"}]}`,
+		// 		// X("pattern_5"): `{"field_0":[{"equals-ignore-case": "Hello"}], "field_1":[{"wildcard": "*.jpg"}]}`,
+		// 	},
+		// 	events: [][]byte{
+		// 		[]byte(`{"field_0": "foo", "field_1": "asdf"}`),
+		// 		[]byte(`{"field_0": "barcode", "field_1": "bar"}`),
+		// 		[]byte(`{"field_0": "hello", "field_1": "image.jpg"}`),
+		// 		[]byte(`{"field_0": "baz", "field_1": "abcf"}`),
+		// 	},
+		// 	expected: [][]X{
+		// 		{X("pattern_3")},
+		// 		{X("pattern_4")},
+		// 		{},
+		// 		{},
+		// 	},
+		// },
 	}
 
 	for _, tc := range testCases {
@@ -105,6 +149,9 @@ func TestMatcherFromPatterns(t *testing.T) {
 				oldMatcher.addPattern(x, pattern)
 			}
 
+			visualizer := newMermaidVisualizer()
+			t.Logf("Matcher:\n%v", visualizer.visualize(matcher))
+
 			for i, event := range tc.events {
 				matches, err := matcher.matchesForJSONEvent(event)
 				assert.NoError(t, err)
@@ -113,8 +160,8 @@ func TestMatcherFromPatterns(t *testing.T) {
 				assert.Equal(t, tc.expected[i], matches)
 				if !assert.Equal(t, oldMatches, matches) {
 					t.Logf("Patterns: %v, Event: %v, Matches: %v", tc.patterns, string(event), matches)
-					t.Logf("Matcher: %v", unravelMatcher(matcher, true))
-					t.Logf("Old Matcher: %v", unravelMatcher(oldMatcher, true))
+					// t.Logf("Matcher: %v", unravelMatcher(matcher, true))
+					// t.Logf("Old Matcher: %v", unravelMatcher(oldMatcher, true))
 				}
 			}
 		})
@@ -225,7 +272,7 @@ func TestMatcherFromSimplePatterns(t *testing.T) {
 // }
 
 func BenchmarkMatcherFromPatterns(b *testing.B) {
-	patternsJSON := generatePatterns(100, []int{1000, 100})
+	patternsJSON := generatePatterns(100, []int{3, 3, 3, 3, 3})
 	patterns := make(map[X]string)
 
 	for i, pattern := range patternsJSON {
@@ -338,7 +385,7 @@ func visualizePathTrieAsMermaidRecursive(buf *bytes.Buffer, trie *pathTrie, pare
 	if !exists {
 		currentId = fmt.Sprintf("%p", trie)
 		visitedNodes[currentPtr] = currentId
-		buf.WriteString(fmt.Sprintf("    %s[%s<br />%p]\n", currentId, trie.path, trie))
+		buf.WriteString(fmt.Sprintf("    %s[%s<br />%p<br />%d]\n", currentId, trie.path, trie, trie.node.hash))
 	}
 
 	visualizeTrieNodeAsMermaid(buf, trie.node, &currentId, depth+1, visitedNodes, visitedLinks)
@@ -400,7 +447,7 @@ func visualizeTrieNodeAsMermaid(buf *bytes.Buffer, node *trieNode, parentId *str
 			if ch == '"' {
 				buf.WriteString(fmt.Sprintf("    %s[QUOTE<br />%p]\n", childId, child))
 			} else {
-				buf.WriteString(fmt.Sprintf("    %s[%c<br />%p]\n", childId, ch, child))
+				buf.WriteString(fmt.Sprintf("    %s[%c<br />%p<br />%d]\n", childId, ch, child, child.hash))
 			}
 		}
 

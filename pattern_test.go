@@ -227,8 +227,8 @@ func generatePatterns(numPatterns int, fieldSizes []int) []string {
 		pattern := make(map[string][]interface{})
 		for j := 0; j < len(fieldSizes); j++ {
 			fieldName := fmt.Sprintf("field_%d", j)
-			// patternType := rand.Intn(6)
-			patternType := 0
+			patternType := rand.Intn(2)
+			// patternType := 0
 			switch patternType {
 			case 0:
 				// Regular string values
@@ -240,18 +240,18 @@ func generatePatterns(numPatterns int, fieldSizes []int) []string {
 			case 1:
 				// Prefix pattern
 				pattern[fieldName] = []interface{}{map[string]string{"prefix": generateRandomString(2)}}
-			case 2:
-				// Exists pattern
-				pattern[fieldName] = []interface{}{map[string]bool{"exists": rand.Intn(2) == 1}}
-			case 3:
-				// Anything-but pattern
-				pattern[fieldName] = []interface{}{map[string][]string{"anything-but": generateRandomStrings(fieldSizes[j])}}
-			case 4:
-				// Wildcard pattern
-				pattern[fieldName] = []interface{}{map[string]string{"wildcard": fmt.Sprintf("%s*%s", generateRandomString(1), generateRandomString(1))}}
-			case 5:
-				// Equals-ignore-case pattern
-				pattern[fieldName] = []interface{}{map[string]string{"equals-ignore-case": generateRandomString(4)}} // Using 4 as a fixed length
+				// case 2:
+				// 	// Exists pattern
+				// 	pattern[fieldName] = []interface{}{map[string]bool{"exists": rand.Intn(2) == 1}}
+				// case 3:
+				// 	// Anything-but pattern
+				// 	pattern[fieldName] = []interface{}{map[string][]string{"anything-but": generateRandomStrings(fieldSizes[j])}}
+				// case 4:
+				// 	// Wildcard pattern
+				// 	pattern[fieldName] = []interface{}{map[string]string{"wildcard": fmt.Sprintf("%s*%s", generateRandomString(1), generateRandomString(1))}}
+				// case 5:
+				// 	// Equals-ignore-case pattern
+				// 	pattern[fieldName] = []interface{}{map[string]string{"equals-ignore-case": generateRandomString(4)}} // Using 4 as a fixed length
 			}
 		}
 		patternJSON, _ := json.Marshal(pattern)
