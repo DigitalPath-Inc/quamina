@@ -20,6 +20,8 @@ type trieNode struct {
 	hash             uint64
 }
 
+var visualizer = newMermaidTrieVisualizer()
+
 func (t *pathTrie) generateHash() uint64 {
 	if t.node == nil {
 		return 0
@@ -197,6 +199,8 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (ma
 
 		buildTrieStart := time.Now()
 		err = buildTrie(root, fields, x)
+		// visualizer.reset()
+		// fmt.Printf("New trie:\n%v\n", visualizer.visualize(root))
 		buildTrieTime += time.Since(buildTrieStart)
 		if err != nil {
 			return nil, err
@@ -335,22 +339,27 @@ func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patter
 	children := make(map[byte]*trieNode)
 	for _, r := range value {
 		if alt, exists := caseFoldingPairs[r]; exists {
-			node := newTrie()
-			children[byte(alt)] = node
+			if _, nodeExists := children[byte(alt)]; !nodeExists {
+				children[byte(alt)] = newTrie()
+			}
 		}
-		node := newTrie()
-		children[byte(r)] = node
+		if _, exists := children[byte(r)]; !exists {
+			children[byte(r)] = newTrie()
+		}
 
-		for _, node := range nodes {
-			node.children = children
+		newNodes := make([]*trieNode, 0, len(children))
+		for _, n := range nodes {
+			if n.children == nil {
+				n.children = make(map[byte]*trieNode)
+			}
+			for ch, child := range children {
+				if _, exists := n.children[ch]; !exists {
+					n.children[ch] = child
+				}
+				newNodes = append(newNodes, n.children[ch])
+			}
+		}
 
-		}
-		newNodes := make([]*trieNode, len(children))
-		i := 0
-		for _, n := range children {
-			newNodes[i] = n
-			i++
-		}
 		nodes = newNodes
 		children = make(map[byte]*trieNode)
 	}

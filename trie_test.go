@@ -69,13 +69,13 @@ func TestTrieFromPatterns(t *testing.T) {
 	// patterns[X("pattern_1")] = `{"field_0":["foo", "baz"], "field_1":["asdf", "zxcv"]}`
 	// patterns[X("pattern_2")] = `{"field_0":[{"prefix": "foo"}], "field_1":[{"prefix": "bar"}]}`
 	patterns[X("pattern_3")] = `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":[{"prefix": "bar"}]}`
-	// patterns[X("pattern_4")] = `{"field_0":["aaaa", "abaa"], "field_1":["cccc", "cbaa"]}`
+	patterns[X("pattern_4")] = `{"field_0":["aaaa", "abaa"], "field_1":["cccc", "cbaa"]}`
 	// patterns[X("pattern_5")] = `{"field_1":["bbbb", "bbaa"]}`
 	// patterns[X("pattern_6")] = `{"field_1":[{"prefix": "bbaa"}]}`
-	// patterns[X("pattern_7")] = `{"field_1":["bbbbb", "bbaa"]}`
+	patterns[X("pattern_7")] = `{"field_0":[{"prefix": "bar"}], "field_1": ["pres"]}`
 	patterns[X("pattern_8")] = `{"field_0":[{"prefix": "bar"}], "field_1":["foo", {"prefix": "bar"}, "baz", {"equals-ignore-case": "pReSeNt"}]}`
 
-	fmt.Printf("Patterns: %v\n", patterns)
+	// fmt.Printf("Patterns: %v\n", patterns)
 
 	start := time.Now()
 	fields := make(map[string]struct{})
@@ -89,7 +89,17 @@ func TestTrieFromPatterns(t *testing.T) {
 	// 	t.Logf("Trie for pattern %s:\n%v", p, visualizePathTrie(trie))
 	// }
 	visualizer := newMermaidTrieVisualizer()
-	t.Logf("Mermaid Diagram for all tries:\n%v", visualizer.visualize(tries))
+	mermaidDiagram := visualizer.visualize(tries)
+	if !assert.Contains(t, mermaidDiagram, "pattern_3") {
+		t.Fatalf("Mermaid diagram does not contain pattern_3:\n%v", mermaidDiagram)
+	}
+	if !assert.Contains(t, mermaidDiagram, "pattern_4") {
+		t.Fatalf("Mermaid diagram does not contain pattern_4:\n%v", mermaidDiagram)
+	}
+	if !assert.Contains(t, mermaidDiagram, "pattern_8") {
+		t.Fatalf("Mermaid diagram does not contain pattern_8:\n%v", mermaidDiagram)
+	}
+	t.Logf("Mermaid Diagram for all tries:\n%v", mermaidDiagram)
 }
 
 func TestMatcherFromPatterns(t *testing.T) {
@@ -276,7 +286,7 @@ func TestMatcherFromSimplePatterns(t *testing.T) {
 // }
 
 func BenchmarkMatcherFromPatterns(b *testing.B) {
-	patternsJSON := generatePatterns(100, []int{3, 3, 3, 3, 3})
+	patternsJSON := generatePatterns(10000, []int{1000})
 	patterns := make(map[X]string)
 
 	for i, pattern := range patternsJSON {

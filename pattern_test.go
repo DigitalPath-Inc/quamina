@@ -227,8 +227,8 @@ func generatePatterns(numPatterns int, fieldSizes []int) []string {
 		pattern := make(map[string][]interface{})
 		for j := 0; j < len(fieldSizes); j++ {
 			fieldName := fmt.Sprintf("field_%d", j)
-			patternType := rand.Intn(3) // Limited to only string, prefix, equals-ignore-case
-			// patternType := 0
+			// patternType := rand.Intn(3) // Limited to only string, prefix, equals-ignore-case
+			patternType := 0
 			switch patternType {
 			case 0:
 				// Regular string values
