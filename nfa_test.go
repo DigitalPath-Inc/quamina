@@ -85,7 +85,13 @@ func TestFocusedMerge(t *testing.T) {
 	}
 }
 
-func unravelFaNext(buf *bytes.Buffer, faNext *faNext, depth int, showMemoryAddress bool) {
+func unravelFaNext(buf *bytes.Buffer, faNext *faNext, depth int, showMemoryAddress bool, visited map[interface{}]bool) {
+	if visited[faNext] {
+		buf.WriteString(fmt.Sprintf("%s(already visited)\n", strings.Repeat("  ", depth)))
+		return
+	}
+	visited[faNext] = true
+
 	indent := strings.Repeat("  ", depth)
 	if showMemoryAddress {
 		buf.WriteString(fmt.Sprintf("%sfaNext: %p\n", indent, faNext))
@@ -99,11 +105,17 @@ func unravelFaNext(buf *bytes.Buffer, faNext *faNext, depth int, showMemoryAddre
 		} else {
 			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
 		}
-		unravelFaState(buf, state, depth+2, showMemoryAddress)
+		unravelFaState(buf, state, depth+2, showMemoryAddress, visited)
 	}
 }
 
-func unravelFaState(buf *bytes.Buffer, state *faState, depth int, showMemoryAddress bool) {
+func unravelFaState(buf *bytes.Buffer, state *faState, depth int, showMemoryAddress bool, visited map[interface{}]bool) {
+	if visited[state] {
+		buf.WriteString(fmt.Sprintf("%s(already visited)\n", strings.Repeat("  ", depth)))
+		return
+	}
+	visited[state] = true
+
 	indent := strings.Repeat("  ", depth)
 	if showMemoryAddress {
 		buf.WriteString(fmt.Sprintf("%sfaState: %p\n", indent, state))
@@ -112,7 +124,7 @@ func unravelFaState(buf *bytes.Buffer, state *faState, depth int, showMemoryAddr
 		buf.WriteString(fmt.Sprintf("%sfaState:\n", indent))
 		buf.WriteString(fmt.Sprintf("%s  table:\n", indent))
 	}
-	unravelSmallTable(buf, state.table, depth+1, showMemoryAddress)
+	unravelSmallTable(buf, state.table, depth+1, showMemoryAddress, visited)
 	buf.WriteString(fmt.Sprintf("%s  fieldTransitions:\n", indent))
 	for i, fm := range state.fieldTransitions {
 		if showMemoryAddress {
@@ -120,6 +132,6 @@ func unravelFaState(buf *bytes.Buffer, state *faState, depth int, showMemoryAddr
 		} else {
 			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
 		}
-		unravelFieldMatcher(buf, fm, depth+2, showMemoryAddress)
+		unravelFieldMatcher(buf, fm, depth+2, showMemoryAddress, visited)
 	}
 }

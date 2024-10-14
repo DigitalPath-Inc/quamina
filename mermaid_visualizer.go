@@ -147,7 +147,7 @@ func (mv *mermaidVisualizer) visualizeChildren(node interface{}, parentId string
 		}
 		for i, state := range v.epsilon {
 			stateId := mv.visualizeNode(state, parentId)
-			mv.buf.WriteString(fmt.Sprintf("    %s[\"%s\"]\n", stateId, sanitizeMermaidLabel(fmt.Sprintf("Epsilon_%d", i))))
+			mv.buf.WriteString(fmt.Sprintf("    %s[\"%s<br />%p<br />%p\"]\n", stateId, sanitizeMermaidLabel(fmt.Sprintf("Epsilon_%d", i)), state, state.table))
 		}
 	case *faNext:
 		for _, state := range v.states {

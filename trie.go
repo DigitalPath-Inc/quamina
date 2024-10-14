@@ -7,8 +7,10 @@ import (
 )
 
 type pathTrie struct {
-	path string
-	node *trieNode
+	path               string
+	node               *trieNode
+	hasNumbers         bool
+	isNondeterministic bool
 }
 
 type trieNode struct {
@@ -261,8 +263,8 @@ func insertValue(trie *pathTrie, val typedVal, remainingFields []*patternField, 
 		err = insertPrefixValue(trie, val.val, remainingFields, x)
 	case monocaseType:
 		err = insertMonocaseValue(trie, val.val, remainingFields, x)
-	// case wildcardType:
-	// 	err = insertWildcardValue(trie, val.val, remainingFields, x)
+	case wildcardType:
+		err = insertWildcardValue(trie, val.val, remainingFields, x)
 	default:
 		return fmt.Errorf("unknown value type: %v", val.vType)
 	}
@@ -374,6 +376,42 @@ func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patter
 	return nil
 }
 
+func insertWildcardValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
+	node := trie.node
+
+	var stop int // Stop one short to skip the closing quote if the * is at the end
+	if value[len(value)-1] == '*' && value[len(value)-2] != '\\' {
+		stop = len(value) - 1
+	} else {
+		stop = len(value)
+		trie.isNondeterministic = true
+	}
+
+	for i := 0; i < stop; i++ {
+		ch := value[i]
+		if node.children == nil {
+			node.children = make(map[byte]*trieNode)
+		}
+		if _, exists := node.children[ch]; !exists {
+			node.children[ch] = newTrie()
+		}
+		node = node.children[ch]
+
+		// If the next character is a * set isWildcard to true and advance to the character after
+		if i+1 < stop && value[i+1] == '*' {
+			node.isWildcard = true
+			i++
+		}
+	}
+
+	err := handleTransition(trie, node, remainingFields, x)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func convertTrieToCoreMatcher(cm *coreMatcher, root map[string]*pathTrie) error {
 	fields := cm.fields()
 	freshFields := &coreFields{
@@ -392,6 +430,8 @@ func convertTrieToCoreMatcher(cm *coreMatcher, root map[string]*pathTrie) error 
 			return err
 		}
 		freshState.transitions[path] = vm
+		vm.fields().isNondeterministic = trie.isNondeterministic
+		vm.fields().hasNumbers = trie.hasNumbers
 	}
 
 	// fmt.Printf("Root path: %s\n", root.path)
@@ -430,11 +470,9 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	size := len(node.children) + len(node.transition)
 	states := make(map[byte]*faNext, size)
 
-	if node.isEnd || node.isWildcard {
+	if node.isEnd || (node.isWildcard && len(node.children) == 0) {
 		createEndState(node, &states)
-	}
-
-	if len(node.transition) > 0 {
+	} else if len(node.transition) > 0 {
 		createTransitionState(node, &states)
 	}
 
@@ -457,14 +495,27 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 		steps = append(steps, states[ch])
 	}
 
-	if len(bytes) == 0 {
+	if len(node.children) == 0 {
 		fmt.Println("Children: ", node.children)
 		fmt.Println("Transitions: ", node.transition)
 		fmt.Println("IsEnd: ", node.isEnd)
 		fmt.Println("IsWildcard: ", node.isWildcard)
 		fmt.Println("MemberOfPatterns: ", node.memberOfPatterns)
+		fmt.Printf("Bytes: %v\n", bytes)
+		fmt.Printf("Value Terminator: %v\n", valueTerminator)
+		fmt.Printf("Steps: %v\n", steps)
 	}
-	return makeSmallTable(nil, bytes, steps), nil
+	table := makeSmallTable(nil, bytes, steps)
+
+	if node.isWildcard && len(node.children) > 0 {
+		if table.epsilon == nil {
+			table.epsilon = make([]*faState, 1)
+		}
+		epsilon := &faState{table: table}
+		table.epsilon[0] = epsilon
+	}
+
+	return table, nil
 }
 
 type stateCache map[uint64]*faNext
@@ -492,6 +543,7 @@ func createEndState(node *trieNode, states *map[byte]*faNext) {
 
 	globalStateCache[key] = &faNext{states: []*faState{endState}}
 	(*states)[valueTerminator] = globalStateCache[key]
+	// (*states)[byte(byteCeiling)] = nil
 }
 
 func createTransitionState(node *trieNode, states *map[byte]*faNext) {
@@ -506,23 +558,37 @@ func createTransitionState(node *trieNode, states *map[byte]*faNext) {
 	(*states)[valueTerminator] = globalStateCache[key]
 }
 
-func createWildcardState(node *trieNode, nextState *faState) error {
-	for x := range node.memberOfPatterns {
-		fm := newFieldMatcher()
-		fm.addMatch(x)
-		nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
-	}
+// func createWildcardState(node *trieNode, nextState *faState) error {
+// 	fmt.Printf("Wildcard called with %v children\n", len(node.children))
+// 	if len(node.children) != 0 {
+// 		table, err := buildSmallTableFromTrie(node)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		if table.epsilon == nil {
+// 			table.epsilon = make([]*faState, 1)
+// 		}
+// 		table.epsilon = append(table.epsilon, &faState{table: table})
 
-	if len(node.transition) > 0 {
-		transitionState, err := handleTransitions(node.transition)
-		if err != nil {
-			return err
-		}
-		nextState.fieldTransitions = append(nextState.fieldTransitions, transitionState.fieldTransitions...)
-	}
+// 		nextState.table = table
+// 	}
 
-	return nil
-}
+// 	for x := range node.memberOfPatterns {
+// 		fm := newFieldMatcher()
+// 		fm.addMatch(x)
+// 		nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
+// 	}
+
+// 	if len(node.transition) > 0 {
+// 		transitionState, err := handleTransitions(node.transition)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		nextState.fieldTransitions = append(nextState.fieldTransitions, transitionState.fieldTransitions...)
+// 	}
+
+// 	return nil
+// }
 
 func getStateKey(node *trieNode) uint64 {
 	return node.hash
@@ -597,12 +663,12 @@ func getOrCreateState(node *trieNode) *faState {
 		table: newSmallTable(),
 	}
 
-	if node.isWildcard {
-		createWildcardState(node, newState)
-	} else {
-		childTable, _ := buildSmallTableFromTrie(node)
-		newState.table = childTable
-	}
+	// if node.isWildcard {
+	// 	createWildcardState(node, newState)
+	// } else {
+	childTable, _ := buildSmallTableFromTrie(node)
+	newState.table = childTable
+	// }
 
 	globalStateCache[key] = &faNext{states: []*faState{newState}}
 	return newState

@@ -65,7 +65,13 @@ func TestUnpack(t *testing.T) {
 	}
 }
 
-func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int, showMemoryAddress bool) {
+func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int, showMemoryAddress bool, visited map[interface{}]bool) {
+	if visited[table] {
+		buf.WriteString(fmt.Sprintf("%s(already visited)\n", strings.Repeat("  ", depth)))
+		return
+	}
+	visited[table] = true
+
 	if table == nil {
 		buf.WriteString(fmt.Sprintf("%s<nil>\n", strings.Repeat("  ", depth)))
 		return
@@ -86,7 +92,7 @@ func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int, showMemo
 			} else {
 				buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
 			}
-			unravelFaNext(buf, step, depth+3, showMemoryAddress)
+			unravelFaNext(buf, step, depth+3, showMemoryAddress, visited)
 		} else {
 			buf.WriteString(fmt.Sprintf("%s    %d: <nil>\n", indent, i))
 		}
@@ -98,7 +104,7 @@ func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int, showMemo
 		} else {
 			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
 		}
-		unravelFaState(buf, state, depth+3, showMemoryAddress)
+		unravelFaState(buf, state, depth+3, showMemoryAddress, visited)
 	}
 }
 

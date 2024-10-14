@@ -6,7 +6,13 @@ import (
 	"strings"
 )
 
-func unravelFieldMatcher(buf *bytes.Buffer, fm *fieldMatcher, depth int, showMemoryAddress bool) {
+func unravelFieldMatcher(buf *bytes.Buffer, fm *fieldMatcher, depth int, showMemoryAddress bool, visited map[interface{}]bool) {
+	if visited[fm] {
+		buf.WriteString(fmt.Sprintf("%s(already visited)\n", strings.Repeat("  ", depth)))
+		return
+	}
+	visited[fm] = true
+
 	indent := strings.Repeat("  ", depth)
 	fields := fm.fields()
 
@@ -24,7 +30,7 @@ func unravelFieldMatcher(buf *bytes.Buffer, fm *fieldMatcher, depth int, showMem
 			} else {
 				buf.WriteString(fmt.Sprintf("%s    %s:\n", indent, path))
 			}
-			unravelValueMatcher(buf, vm, depth+3, showMemoryAddress)
+			unravelValueMatcher(buf, vm, depth+3, showMemoryAddress, visited)
 		}
 	}
 
@@ -40,7 +46,7 @@ func unravelFieldMatcher(buf *bytes.Buffer, fm *fieldMatcher, depth int, showMem
 			} else {
 				buf.WriteString(fmt.Sprintf("%s    %s:\n", indent, path))
 			}
-			unravelFieldMatcher(buf, fm, depth+3, showMemoryAddress)
+			unravelFieldMatcher(buf, fm, depth+3, showMemoryAddress, visited)
 		}
 	}
 
@@ -52,7 +58,7 @@ func unravelFieldMatcher(buf *bytes.Buffer, fm *fieldMatcher, depth int, showMem
 			} else {
 				buf.WriteString(fmt.Sprintf("%s    %s:\n", indent, path))
 			}
-			unravelFieldMatcher(buf, fm, depth+3, showMemoryAddress)
+			unravelFieldMatcher(buf, fm, depth+3, showMemoryAddress, visited)
 		}
 	}
 }

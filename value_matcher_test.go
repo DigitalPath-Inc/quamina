@@ -421,7 +421,13 @@ func TestMergeNfaAndNumeric(t *testing.T) {
 	}
 }
 
-func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int, showMemoryAddress bool) {
+func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int, showMemoryAddress bool, visited map[interface{}]bool) {
+	if visited[vm] {
+		buf.WriteString(fmt.Sprintf("%s(already visited)\n", strings.Repeat("  ", depth)))
+		return
+	}
+	visited[vm] = true
+
 	indent := strings.Repeat("  ", depth)
 	fields := vm.fields()
 
@@ -437,29 +443,7 @@ func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int, showMem
 		} else {
 			buf.WriteString(fmt.Sprintf("%s  startTable:\n", indent))
 		}
-		buf.WriteString(fmt.Sprintf("%s    ceilings: %s\n", indent, formatCeilings(fields.startTable.ceilings)))
-		buf.WriteString(fmt.Sprintf("%s    steps:\n", indent))
-		for i, step := range fields.startTable.steps {
-			if step != nil {
-				if showMemoryAddress {
-					buf.WriteString(fmt.Sprintf("%s      %d: %p\n", indent, i, step))
-				} else {
-					buf.WriteString(fmt.Sprintf("%s      %d:\n", indent, i))
-				}
-				unravelFaNext(buf, step, depth+4, showMemoryAddress)
-			} else {
-				buf.WriteString(fmt.Sprintf("%s      %d: <nil>\n", indent, i))
-			}
-		}
-		buf.WriteString(fmt.Sprintf("%s    epsilon:\n", indent))
-		for i, state := range fields.startTable.epsilon {
-			if showMemoryAddress {
-				buf.WriteString(fmt.Sprintf("%s      %d: %p\n", indent, i, state))
-			} else {
-				buf.WriteString(fmt.Sprintf("%s      %d:\n", indent, i))
-			}
-			unravelFaState(buf, state, depth+4, showMemoryAddress)
-		}
+		unravelSmallTable(buf, fields.startTable, depth+2, showMemoryAddress, visited)
 	}
 
 	if fields.singletonMatch != nil {
@@ -472,7 +456,7 @@ func unravelValueMatcher(buf *bytes.Buffer, vm *valueMatcher, depth int, showMem
 		} else {
 			buf.WriteString(fmt.Sprintf("%s  singletonTransition:\n", indent))
 		}
-		unravelFieldMatcher(buf, fields.singletonTransition, depth+2, showMemoryAddress)
+		unravelFieldMatcher(buf, fields.singletonTransition, depth+2, showMemoryAddress, visited)
 	}
 
 	buf.WriteString(fmt.Sprintf("%s  hasNumbers: %v\n", indent, fields.hasNumbers))
