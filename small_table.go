@@ -105,8 +105,10 @@ func makeSmallTable(defaultStep *faNext, indices []byte, steps []*faNext) *small
 			t.ceilings = append(t.ceilings, index)
 			t.steps = append(t.steps, defaultStep)
 		}
-		t.ceilings = append(t.ceilings, index+1)
-		t.steps = append(t.steps, steps[i])
+		if index < byte(byteCeiling) {
+			t.ceilings = append(t.ceilings, index+1)
+			t.steps = append(t.steps, steps[i])
+		}
 		lastIndex = index + 1
 	}
 	if t.ceilings[len(t.ceilings)-1] < byte(byteCeiling) {

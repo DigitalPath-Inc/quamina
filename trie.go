@@ -147,18 +147,6 @@ func newTrie() *trieNode {
 	}
 }
 
-func (t *trieNode) insert(value []byte, x X) {
-	node := t
-	for _, ch := range value {
-		if _, exists := node.children[ch]; !exists {
-			node.children[ch] = newTrie()
-		}
-		node = node.children[ch]
-	}
-	node.isEnd = true
-	node.memberOfPatterns[x] = struct{}{}
-}
-
 func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
 	// start := time.Now()
 	fields := make(map[string]struct{})
@@ -323,6 +311,15 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 		node = node.children[ch]
 	}
 
+	// Add a "*" child to the last node
+	if node.children == nil {
+		node.children = make(map[byte]*trieNode)
+	}
+	if _, exists := node.children['*']; !exists {
+		node.children['*'] = newTrie()
+	}
+	node = node.children['*']
+
 	// Mark the last node as a prefix end
 	node.isWildcard = true
 
@@ -397,11 +394,15 @@ func insertWildcardValue(trie *pathTrie, value string, remainingFields []*patter
 		}
 		node = node.children[ch]
 
-		// If the next character is a * set isWildcard to true and advance to the character after
-		if i+1 < stop && value[i+1] == '*' {
+		if value[i] == '*' {
 			node.isWildcard = true
-			i++
 		}
+
+		// If the next character is a * set isWildcard to true and advance to the character after
+		// if i+1 < stop && value[i+1] == '*' {
+		// 	node.isWildcard = true
+		// 	i++
+		// }
 	}
 
 	err := handleTransition(trie, node, remainingFields, x)
@@ -469,16 +470,36 @@ func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher) error {
 func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	size := len(node.children) + len(node.transition)
 	states := make(map[byte]*faNext, size)
+	epsilon := make([]*faState, 0)
 
-	if node.isEnd || (node.isWildcard && len(node.children) == 0) {
-		createEndState(node, &states)
-	} else if len(node.transition) > 0 {
-		createTransitionState(node, &states)
+	if node.isEnd || len(node.transition) > 0 {
+		states[valueTerminator] = createNextTransition(node)
 	}
 
 	for ch, child := range node.children {
+		if child.isWildcard && len(child.children) == 0 {
+			continue
+		}
+
+		if child.isWildcard {
+			wildcardState, nextStates := handleWildcardNode(child)
+			epsilon = append(epsilon, wildcardState)
+			for ch, next := range nextStates {
+				if _, exists := states[ch]; !exists {
+					states[ch] = next
+				} else {
+					states[ch].states = append(states[ch].states, next.states...)
+				}
+			}
+			continue
+		}
+
 		nextState := getOrCreateState(child)
-		states[ch] = &faNext{states: []*faState{nextState}}
+		if _, exists := states[ch]; !exists {
+			states[ch] = &faNext{states: []*faState{nextState}}
+		} else {
+			states[ch].states = append(states[ch].states, nextState)
+		}
 	}
 
 	// Convert the states map to a sorted slice of byte and faNext pairs
@@ -495,7 +516,7 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 		steps = append(steps, states[ch])
 	}
 
-	if len(node.children) == 0 {
+	if node.isWildcard {
 		fmt.Println("Children: ", node.children)
 		fmt.Println("Transitions: ", node.transition)
 		fmt.Println("IsEnd: ", node.isEnd)
@@ -505,57 +526,134 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 		fmt.Printf("Value Terminator: %v\n", valueTerminator)
 		fmt.Printf("Steps: %v\n", steps)
 	}
-	table := makeSmallTable(nil, bytes, steps)
 
-	if node.isWildcard && len(node.children) > 0 {
-		if table.epsilon == nil {
-			table.epsilon = make([]*faState, 1)
-		}
-		epsilon := &faState{table: table}
-		table.epsilon[0] = epsilon
+	var table *smallTable
+	if len(bytes) > 0 {
+		table = makeSmallTable(nil, bytes, steps)
+	} else {
+		table = newSmallTable()
 	}
+	table.epsilon = epsilon
+
+	// if node.isWildcard && len(node.children) > 0 {
+	// 	if table.epsilon == nil {
+	// 		table.epsilon = make([]*faState, 1)
+	// 	}
+	// 	epsilon := &faState{table: table}
+	// 	table.epsilon[0] = epsilon
+	// }
 
 	return table, nil
+}
+
+func getOrCreateState(node *trieNode) *faState {
+	key := getStateKey(node)
+	if cachedState, exists := globalStateCache[key]; exists {
+		return cachedState.states[0]
+	}
+
+	newState := &faState{
+		table: newSmallTable(),
+	}
+
+	// Special handling for wildcard nodes
+	for _, child := range node.children {
+		if child.isWildcard && len(child.children) == 0 {
+			transitionStates := createTransitionStates(child)
+			for _, transitionState := range transitionStates {
+				newState.fieldTransitions = append(newState.fieldTransitions, transitionState.fieldTransitions...)
+			}
+		}
+	}
+	childTable, _ := buildSmallTableFromTrie(node)
+	newState.table = childTable
+
+	globalStateCache[key] = &faNext{states: []*faState{newState}}
+	return newState
 }
 
 type stateCache map[uint64]*faNext
 
 var globalStateCache = make(stateCache)
 
-func createEndState(node *trieNode, states *map[byte]*faNext) {
+func createNextTransition(node *trieNode) *faNext {
 	key := getStateKey(node)
 	if cachedState, exists := globalStateCache[key]; exists {
-		(*states)[valueTerminator] = cachedState
-		return
+		return cachedState
 	}
 
-	endState := &faState{
-		table:            newSmallTable(),
-		fieldTransitions: make([]*fieldMatcher, 0, len(node.memberOfPatterns)),
+	states := createTransitionStates(node)
+
+	if len(states) > 0 {
+		result := &faNext{states: states}
+		globalStateCache[key] = result
+		return result
 	}
 
-	// Handle pattern matches
-	for x := range node.memberOfPatterns {
-		fm := newFieldMatcher()
-		fm.addMatch(x)
-		endState.fieldTransitions = append(endState.fieldTransitions, fm)
-	}
-
-	globalStateCache[key] = &faNext{states: []*faState{endState}}
-	(*states)[valueTerminator] = globalStateCache[key]
-	// (*states)[byte(byteCeiling)] = nil
+	return nil
 }
 
-func createTransitionState(node *trieNode, states *map[byte]*faNext) {
-	key := getStateKey(node)
-	if cachedState, exists := globalStateCache[key]; exists {
-		(*states)[valueTerminator] = cachedState
-		return
+// This function creates the transition states for field and end transitions
+func createTransitionStates(node *trieNode) []*faState {
+	var states []*faState
+
+	// Handle end state if the node is an end node
+	if node.isEnd {
+		endState := &faState{
+			table:            newSmallTable(),
+			fieldTransitions: make([]*fieldMatcher, 0, len(node.memberOfPatterns)),
+		}
+
+		for x := range node.memberOfPatterns {
+			fm := newFieldMatcher()
+			fm.addMatch(x)
+			endState.fieldTransitions = append(endState.fieldTransitions, fm)
+		}
+
+		states = append(states, endState)
 	}
 
-	transitionState, _ := handleTransitions(node.transition)
-	globalStateCache[key] = &faNext{states: []*faState{transitionState}}
-	(*states)[valueTerminator] = globalStateCache[key]
+	// Handle transition state if the node has transitions
+	if len(node.transition) > 0 {
+		transitionState, _ := handleTransitions(node.transition)
+		states = append(states, transitionState)
+	}
+
+	return states
+}
+
+func handleWildcardNode(node *trieNode) (*faState, map[byte]*faNext) {
+	wildcardState := &faState{}
+
+	states := make(map[byte]*faNext, len(node.children))
+
+	if len(node.children) > 0 {
+		for ch, child := range node.children {
+			nextState := getOrCreateState(child)
+			states[ch] = &faNext{states: []*faState{nextState}}
+		}
+
+		bytes := make([]byte, 0, len(states))
+		steps := make([]*faNext, 0, len(states))
+		for ch := range states {
+			bytes = append(bytes, ch)
+		}
+		sort.Slice(bytes, func(i, j int) bool {
+			return bytes[i] < bytes[j]
+		})
+
+		for _, ch := range bytes {
+			steps = append(steps, states[ch])
+		}
+
+		wildcardState.table = makeSmallTable(nil, bytes, steps)
+
+		wildcardState.table.epsilon = []*faState{wildcardState}
+
+		// wildcardState.table.epsilon = append(wildcardState.table.epsilon, &faState{table: wildcardState.table})
+	}
+
+	return wildcardState, states
 }
 
 // func createWildcardState(node *trieNode, nextState *faState) error {
@@ -592,38 +690,6 @@ func createTransitionState(node *trieNode, states *map[byte]*faNext) {
 
 func getStateKey(node *trieNode) uint64 {
 	return node.hash
-	// var key strings.Builder
-
-	// // Add basic properties
-	// key.WriteString(fmt.Sprintf("end:%v|wildcard:%v|", node.isEnd, node.isWildcard))
-
-	// // Add patterns
-	// patterns := make([]string, 0, len(node.memberOfPatterns))
-	// for x := range node.memberOfPatterns {
-	// 	patterns = append(patterns, x.(string))
-	// }
-	// sort.Strings(patterns)
-	// key.WriteString(fmt.Sprintf("patterns:%v|", patterns))
-
-	// // Add children
-	// childKeys := make([]string, 0, len(node.children))
-	// for ch, child := range node.children {
-	// 	childKey := fmt.Sprintf("%d:%s", ch, getStateKey(child))
-	// 	childKeys = append(childKeys, childKey)
-	// }
-	// sort.Strings(childKeys)
-	// key.WriteString(fmt.Sprintf("children:%v|", childKeys))
-
-	// // Add transitions
-	// transitions := make([]string, 0, len(node.transition))
-	// for t, pathTrie := range node.transition {
-	// 	transitionKey := fmt.Sprintf("%s:%s", t, getStateKey(pathTrie.node))
-	// 	transitions = append(transitions, transitionKey)
-	// }
-	// sort.Strings(transitions)
-	// key.WriteString(fmt.Sprintf("transitions:%v", transitions))
-
-	// return key.String()
 }
 
 func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
@@ -640,6 +706,8 @@ func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
 			return nil, err
 		}
 		transitionVMs[nextFieldPath] = nextVM
+		nextVM.fields().isNondeterministic = transitionNode.isNondeterministic
+		nextVM.fields().hasNumbers = transitionNode.hasNumbers
 	}
 	fields := &fmFields{
 		transitions: transitionVMs,
@@ -651,25 +719,4 @@ func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
 
 	nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
 	return nextState, nil
-}
-
-func getOrCreateState(node *trieNode) *faState {
-	key := getStateKey(node)
-	if cachedState, exists := globalStateCache[key]; exists {
-		return cachedState.states[0]
-	}
-
-	newState := &faState{
-		table: newSmallTable(),
-	}
-
-	// if node.isWildcard {
-	// 	createWildcardState(node, newState)
-	// } else {
-	childTable, _ := buildSmallTableFromTrie(node)
-	newState.table = childTable
-	// }
-
-	globalStateCache[key] = &faNext{states: []*faState{newState}}
-	return newState
 }

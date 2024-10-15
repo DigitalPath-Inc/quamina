@@ -186,6 +186,9 @@ func sanitizeMermaidLabel(label string) string {
 	label = strings.ReplaceAll(label, "#", "special-#")
 	label = strings.ReplaceAll(label, "\"", "QUOTE")
 	label = strings.ReplaceAll(label, "`", "TICK")
+	if label == "*" {
+		label = "STAR"
+	}
 	return label
 }
 
