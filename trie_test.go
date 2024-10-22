@@ -137,7 +137,7 @@ func TestMatcherFromPatterns(t *testing.T) {
 			patterns: map[X]string{
 				X("pattern_0"): `{"field_0":[{"prefix": "b"}], "field_1":["foo", "bar"]}`,
 				X("pattern_1"): `{"field_0":[{"equals-ignore-case": "fOo"}], "field_1":["foo", {"prefix": "bar"}, "baz"]}`,
-				// X("pattern_2"): `{"field_0":[{"anything-but": ["a", "b"]}]}`,
+				// X("pattern_2"): `{"field_0":[{"anything-but": ["a", "b"]}]}`, // Not currently supported
 				X("pattern_3"): `{"field_0":["foo", "bar"]}`,
 				X("pattern_4"): `{"field_1":["foo", "bar"]}`,
 				X("pattern_5"): `{"field_0":[{"equals-ignore-case": "Hello"}], "field_1":[{"wildcard": "*.jpg"}]}`,

@@ -3,9 +3,15 @@ package quamina
 import (
 	"fmt"
 	"sort"
-	"time"
 )
 
+// This file uses a different, faster approach to building the `coreMatcher` and subcomponents.
+// We start out with a lighter-weight trie structure that is easier to convert to the coreMatcher.
+// By creating this structure up front, we can generate a hash on each of the leaves and are able to re-use end states,
+// which saves a ton of time on object creation. We also can do a direct insert without unpacking and repacking the smallTable,
+// which is the bottleneck of the previous approach.
+
+// A `pathTrie` represents a path in the trie with associated metadata. It could be thought of as a `fieldMatcher` equivalent.
 type pathTrie struct {
 	path               string
 	node               *trieNode
@@ -13,6 +19,7 @@ type pathTrie struct {
 	isNondeterministic bool
 }
 
+// A `trieNode` represents a node in the trie, containing children, flags, and transitions. It could be thought of as a `valueMatcher` equivalent.
 type trieNode struct {
 	children         map[byte]*trieNode
 	isEnd            bool
@@ -22,8 +29,14 @@ type trieNode struct {
 	hash             uint64
 }
 
-var visualizer = newMermaidTrieVisualizer()
+// stateCache is a map of uint64 hashes to faNext pointers. It is used to cache faNext structures that have already been created.
+// The globalStateCache is used to avoid duplicating faNext structures when converting the trie to a coreMatcher.
+type stateCache map[uint64]*faNext
 
+var globalStateCache = make(stateCache)
+
+// generateHash recursively computes a hash for each leaf in a pathTrie. This key is later used in the conversion process to de-duplicate end states.
+// Both the pathTrie and trieNode have a generateHash method because of the recursive nature of the trie.
 func (t *pathTrie) generateHash() uint64 {
 	if t.node == nil {
 		return 0
@@ -132,6 +145,11 @@ func (t *trieNode) generateHash() uint64 {
 	return hash
 }
 
+func getStateKey(node *trieNode) uint64 {
+	return node.hash
+}
+
+// newPathTrie creates a new pathTrie with a given path and a new trieNode.
 func newPathTrie(path string) *pathTrie {
 	return &pathTrie{
 		path: path,
@@ -139,6 +157,8 @@ func newPathTrie(path string) *pathTrie {
 	}
 }
 
+// newTrie creates a new trieNode with a nil children map, nil memberOfPatterns map, and nil transition map.
+// The values are not initialized due to the time cost of doing so.
 func newTrie() *trieNode {
 	return &trieNode{
 		children:         nil, // make(map[byte]*trieNode),
@@ -147,21 +167,17 @@ func newTrie() *trieNode {
 	}
 }
 
+// MatcherFromPatterns is the main function for building a coreMatcher from a set of patterns.
+// It essentially just builds a trie from the patterns and then converts it to a coreMatcher.
 func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
-	// start := time.Now()
 	fields := make(map[string]struct{})
 	root, err := trieFromPatterns(patterns, &fields)
 	if err != nil {
 		return nil, err
 	}
-	// trieTime := time.Since(start)
-	// fmt.Printf("trieFromPatterns Time: %v\n", trieTime)
 
-	// start = time.Now()
 	cm := newCoreMatcher()
 	convertTrieToCoreMatcher(cm, root)
-	// convertTime := time.Since(start)
-	// fmt.Printf("convertTrieToCoreMatcher Time: %v\n", convertTime)
 
 	segmentsTree := newSegmentsIndex()
 	for field := range fields {
@@ -172,26 +188,19 @@ func MatcherFromPatterns(patterns map[X]string) (*coreMatcher, error) {
 	return cm, nil
 }
 
+// trieFromPatterns builds the trie from the patterns. It does so by first converting the pattern JSON to a patternField,
+// then building the trie from the patternFields.
+// `allFields` is a pointer to a map that is used to track all the fields in the trie.
 func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (map[string]*pathTrie, error) {
-	// start := time.Now()
 	root := make(map[string]*pathTrie)
 
-	patternJSONTime := time.Duration(0)
-	buildTrieTime := time.Duration(0)
-
 	for x, patternJSON := range patterns {
-		patternJSONStart := time.Now()
 		fields, err := patternFromJSON([]byte(patternJSON))
-		patternJSONTime += time.Since(patternJSONStart)
 		if err != nil {
 			return nil, err
 		}
 
-		buildTrieStart := time.Now()
 		err = buildTrie(root, fields, x)
-		// visualizer.reset()
-		// fmt.Printf("New trie:\n%v\n", visualizer.visualize(root))
-		buildTrieTime += time.Since(buildTrieStart)
 		if err != nil {
 			return nil, err
 		}
@@ -205,13 +214,11 @@ func trieFromPatterns(patterns map[X]string, allFields *map[string]struct{}) (ma
 		trie.generateHash()
 	}
 
-	// totalDuration := time.Since(start)
-	// fmt.Printf("trieFromPatterns total execution time: %v\n", totalDuration)
-	// fmt.Printf("patternFromJSON total time: %v\n", patternJSONTime)
-	// fmt.Printf("buildTrie total time: %v\n", buildTrieTime)
 	return root, nil
 }
 
+// buildTrie is the core function for building the trie. It inserts the patternFields into the trie.
+// It is called recursively to handle nested fields.
 func buildTrie(root map[string]*pathTrie, fields []*patternField, x X) error {
 	if len(fields) == 0 {
 		return nil
@@ -236,6 +243,7 @@ func buildTrie(root map[string]*pathTrie, fields []*patternField, x X) error {
 	return nil
 }
 
+// insertValue determines the type of the value and inserts it into the trie accordingly.
 func insertValue(trie *pathTrie, val typedVal, remainingFields []*patternField, x X) error {
 	var err error
 	switch val.vType {
@@ -262,7 +270,10 @@ func insertValue(trie *pathTrie, val typedVal, remainingFields []*patternField, 
 	return nil
 }
 
-func handleTransition(trie *pathTrie, node *trieNode, remainingFields []*patternField, x X) error {
+// handleTrieTransition handles the transition from the current path to the next path.
+// It sets the isEnd flag if there are no remaining fields and adds the pattern to the node's memberOfPatterns map.
+// If there are remaining fields, it builds the trie for the remaining fields.
+func handleTrieTransition(node *trieNode, remainingFields []*patternField, x X) error {
 	if len(remainingFields) == 0 {
 		node.isEnd = true
 		if node.memberOfPatterns == nil {
@@ -278,6 +289,8 @@ func handleTransition(trie *pathTrie, node *trieNode, remainingFields []*pattern
 	return nil
 }
 
+// insertStringValue inserts a string value into the trie.
+// It iterates over each character in the string, creating new nodes as necessary, and then calls handleTrieTransition to handle the transition to the next path.
 func insertStringValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
 	node := trie.node
 	for _, ch := range []byte(value) {
@@ -290,7 +303,7 @@ func insertStringValue(trie *pathTrie, value string, remainingFields []*patternF
 		node = node.children[ch]
 	}
 
-	err := handleTransition(trie, node, remainingFields, x)
+	err := handleTrieTransition(node, remainingFields, x)
 	if err != nil {
 		return err
 	}
@@ -298,6 +311,9 @@ func insertStringValue(trie *pathTrie, value string, remainingFields []*patternF
 	return nil
 }
 
+// insertPrefixValue inserts a prefix value into the trie.
+// It iterates over each character in the prefix, creating new nodes as necessary, and then calls handleTrieTransition to handle the transition to the next path.
+// This is basically the same as `insertWildcardValue` but without the nondeterministic flag.
 func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
 	node := trie.node
 	for i := 0; i < len(value)-1; i++ { // Stop one short to skip the closing quote
@@ -323,7 +339,7 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 	// Mark the last node as a prefix end
 	node.isWildcard = true
 
-	err := handleTransition(trie, node, remainingFields, x)
+	err := handleTrieTransition(node, remainingFields, x)
 	if err != nil {
 		return err
 	}
@@ -331,8 +347,7 @@ func insertPrefixValue(trie *pathTrie, value string, remainingFields []*patternF
 	return nil
 }
 
-// insertMonocaseValue uses the same logic as insertStringValue but handles case folding. It basically generates two paths for each rune in the value
-// and adds them to the trie. We first generate all the permutations of the value, then add each as a trie
+// insertMonocaseValue uses the same logic as insertStringValue but handles case folding. It basically sets up a primary path and then creates a secondary path for each case folding pair.
 func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
 	nodes := []*trieNode{trie.node}
 	children := make(map[byte]*trieNode)
@@ -364,7 +379,7 @@ func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patter
 	}
 
 	for _, node := range nodes {
-		err := handleTransition(trie, node, remainingFields, x)
+		err := handleTrieTransition(node, remainingFields, x)
 		if err != nil {
 			return err
 		}
@@ -373,6 +388,10 @@ func insertMonocaseValue(trie *pathTrie, value string, remainingFields []*patter
 	return nil
 }
 
+// insertWildcardValue inserts a wildcard value into the trie.
+// It iterates over each character in the wildcard, creating new nodes as necessary, and then calls handleTrieTransition to handle the transition to the next path.
+// The nondeterministic flag is set if the wildcard is not at the end of the value.
+// This function does not currently handle escaping of the * character.
 func insertWildcardValue(trie *pathTrie, value string, remainingFields []*patternField, x X) error {
 	node := trie.node
 
@@ -397,15 +416,9 @@ func insertWildcardValue(trie *pathTrie, value string, remainingFields []*patter
 		if value[i] == '*' {
 			node.isWildcard = true
 		}
-
-		// If the next character is a * set isWildcard to true and advance to the character after
-		// if i+1 < stop && value[i+1] == '*' {
-		// 	node.isWildcard = true
-		// 	i++
-		// }
 	}
 
-	err := handleTransition(trie, node, remainingFields, x)
+	err := handleTrieTransition(node, remainingFields, x)
 	if err != nil {
 		return err
 	}
@@ -413,6 +426,9 @@ func insertWildcardValue(trie *pathTrie, value string, remainingFields []*patter
 	return nil
 }
 
+// convertTrieToCoreMatcher is the main function for converting the trie to a coreMatcher.
+// It creates a fresh set of coreFields, then iterates over each path in the trie, converting each path to a valueMatcher.
+// It then updates the coreMatcher with the new valueMatchers.
 func convertTrieToCoreMatcher(cm *coreMatcher, root map[string]*pathTrie) error {
 	fields := cm.fields()
 	freshFields := &coreFields{
@@ -435,16 +451,13 @@ func convertTrieToCoreMatcher(cm *coreMatcher, root map[string]*pathTrie) error 
 		vm.fields().hasNumbers = trie.hasNumbers
 	}
 
-	// fmt.Printf("Root path: %s\n", root.path)
-	// fmt.Printf("ValueMatcher for root: %+v\n", vm)
-
 	freshFields.state.update(freshState)
 	cm.updateable.Store(freshFields)
 
-	// fmt.Printf("CoreMatcher after conversion:\n%+v\n", cm)
 	return nil
 }
 
+// This function is not necessarily needed as `convertTrieNodeToValueMatcher` could be called directly but is left here for future use.
 func convertPathTrieToValueMatcher(pt *pathTrie, vm *valueMatcher) error {
 	err := convertTrieNodeToValueMatcher(pt.node, vm)
 	if err != nil {
@@ -454,6 +467,7 @@ func convertPathTrieToValueMatcher(pt *pathTrie, vm *valueMatcher) error {
 	return nil
 }
 
+// This function is responsible for populating the valueMatcher with the appropriate smallTable.
 func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher) error {
 	fields := vm.getFieldsForUpdate()
 
@@ -467,6 +481,8 @@ func convertTrieNodeToValueMatcher(node *trieNode, vm *valueMatcher) error {
 	return nil
 }
 
+// buildSmallTableFromTrie is responsible for building the smallTable from the trieNode.
+// The whole point of this function is to create the smallTable in one shot so that we don't have to unpack and repack it later for performance reasons.
 func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	size := len(node.children) + len(node.transition)
 	states := make(map[byte]*faNext, size)
@@ -516,17 +532,6 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 		steps = append(steps, states[ch])
 	}
 
-	if node.isWildcard {
-		fmt.Println("Children: ", node.children)
-		fmt.Println("Transitions: ", node.transition)
-		fmt.Println("IsEnd: ", node.isEnd)
-		fmt.Println("IsWildcard: ", node.isWildcard)
-		fmt.Println("MemberOfPatterns: ", node.memberOfPatterns)
-		fmt.Printf("Bytes: %v\n", bytes)
-		fmt.Printf("Value Terminator: %v\n", valueTerminator)
-		fmt.Printf("Steps: %v\n", steps)
-	}
-
 	var table *smallTable
 	if len(bytes) > 0 {
 		table = makeSmallTable(nil, bytes, steps)
@@ -535,17 +540,10 @@ func buildSmallTableFromTrie(node *trieNode) (*smallTable, error) {
 	}
 	table.epsilon = epsilon
 
-	// if node.isWildcard && len(node.children) > 0 {
-	// 	if table.epsilon == nil {
-	// 		table.epsilon = make([]*faState, 1)
-	// 	}
-	// 	epsilon := &faState{table: table}
-	// 	table.epsilon[0] = epsilon
-	// }
-
 	return table, nil
 }
 
+// getOrCreateState is responsible for retrieving a cached faState from the globalStateCache or creating a new one if it doesn't exist.
 func getOrCreateState(node *trieNode) *faState {
 	key := getStateKey(node)
 	if cachedState, exists := globalStateCache[key]; exists {
@@ -572,10 +570,9 @@ func getOrCreateState(node *trieNode) *faState {
 	return newState
 }
 
-type stateCache map[uint64]*faNext
-
-var globalStateCache = make(stateCache)
-
+// createNextTransition is responsible for creating a faNext structure for a given trieNode.
+// It first checks the globalStateCache for an existing faNext structure. If one is found, it returns it.
+// If no existing faNext structure is found, it creates a new one by calling createTransitionStates and then caches it in the globalStateCache.
 func createNextTransition(node *trieNode) *faNext {
 	key := getStateKey(node)
 	if cachedState, exists := globalStateCache[key]; exists {
@@ -593,7 +590,7 @@ func createNextTransition(node *trieNode) *faNext {
 	return nil
 }
 
-// This function creates the transition states for field and end transitions
+// createTransitionStates is responsible for creating the transition states for field and end transitions.
 func createTransitionStates(node *trieNode) []*faState {
 	var states []*faState
 
@@ -622,6 +619,8 @@ func createTransitionStates(node *trieNode) []*faState {
 	return states
 }
 
+// handleWildcardNode is responsible for handling the wildcard node.
+// It creates a new faState and iterates over the children, creating the appropriate faNext structures.
 func handleWildcardNode(node *trieNode) (*faState, map[byte]*faNext) {
 	wildcardState := &faState{}
 
@@ -649,49 +648,13 @@ func handleWildcardNode(node *trieNode) (*faState, map[byte]*faNext) {
 		wildcardState.table = makeSmallTable(nil, bytes, steps)
 
 		wildcardState.table.epsilon = []*faState{wildcardState}
-
-		// wildcardState.table.epsilon = append(wildcardState.table.epsilon, &faState{table: wildcardState.table})
 	}
 
 	return wildcardState, states
 }
 
-// func createWildcardState(node *trieNode, nextState *faState) error {
-// 	fmt.Printf("Wildcard called with %v children\n", len(node.children))
-// 	if len(node.children) != 0 {
-// 		table, err := buildSmallTableFromTrie(node)
-// 		if err != nil {
-// 			return err
-// 		}
-// 		if table.epsilon == nil {
-// 			table.epsilon = make([]*faState, 1)
-// 		}
-// 		table.epsilon = append(table.epsilon, &faState{table: table})
-
-// 		nextState.table = table
-// 	}
-
-// 	for x := range node.memberOfPatterns {
-// 		fm := newFieldMatcher()
-// 		fm.addMatch(x)
-// 		nextState.fieldTransitions = append(nextState.fieldTransitions, fm)
-// 	}
-
-// 	if len(node.transition) > 0 {
-// 		transitionState, err := handleTransitions(node.transition)
-// 		if err != nil {
-// 			return err
-// 		}
-// 		nextState.fieldTransitions = append(nextState.fieldTransitions, transitionState.fieldTransitions...)
-// 	}
-
-// 	return nil
-// }
-
-func getStateKey(node *trieNode) uint64 {
-	return node.hash
-}
-
+// handleTransitions is responsible for handling the transitions from the current path to the next path.
+// It creates a new faState and iterates over the transitions, creating the appropriate valueMatchers.
 func handleTransitions(transitions map[string]*pathTrie) (*faState, error) {
 	transitionVMs := make(map[string]*valueMatcher)
 	nextState := &faState{
