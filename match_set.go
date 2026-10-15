@@ -10,6 +10,11 @@ func newMatchSet() *matchSet {
 	return &matchSet{set: make(map[X]bool)}
 }
 
+// reset clears the matchSet for reuse, preserving the allocated map capacity.
+func (m *matchSet) reset() {
+	clear(m.set)
+}
+
 func (m *matchSet) addX(exes ...X) *matchSet {
 	if len(exes) == 0 {
 		return m
@@ -40,4 +45,13 @@ func (m *matchSet) matches() []X {
 		matches = append(matches, x)
 	}
 	return matches
+}
+
+// matchesInto appends matches to the provided buffer and returns it.
+// This avoids allocating a new slice for the result.
+func (m *matchSet) matchesInto(buf []X) []X {
+	for x := range m.set {
+		buf = append(buf, x)
+	}
+	return buf
 }

@@ -8,7 +8,7 @@ func TestMatcherInterface(t *testing.T) {
 		t.Error("Can't cast")
 	}
 	var x X = "x"
-	err := m.addPattern(x, `{"x": [1, 2]}`)
+	err := m.addPattern(x, `{"x": [1, 2]}`, BuiltForComfort)
 	if err != nil {
 		t.Error("addPattern? " + err.Error())
 	}
@@ -18,7 +18,7 @@ func TestMatcherInterface(t *testing.T) {
 	}
 	event := `{"x": [3, 1]}`
 	fields, _ := newJSONFlattener().Flatten([]byte(event), m.getSegmentsTreeTracker())
-	matches, _ := m.matchesForFields(fields)
+	matches, _ := m.matchesForFields(fields, newNfaBuffers())
 	if len(matches) != 1 || matches[0] != x {
 		t.Error("missed match")
 	}

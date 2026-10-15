@@ -57,15 +57,15 @@ func TestCRANLEIGH(t *testing.T) {
 	pCranleigh := `{ "properties": { "STREET": [ "CRANLEIGH" ] } }`
 	p108492 := `{ "properties": { "MAPBLKLOT": ["0011008"], "BLKLOT": ["0011008"]},  "geometry": { "coordinates": [ 37.807807921694092 ] } } `
 
-	err := m.addPattern("CRANLEIGH", pCranleigh)
+	err := m.addPattern("CRANLEIGH", pCranleigh, BuiltForComfort)
 	if err != nil {
 		t.Error("!? " + err.Error())
 	}
-	err = m.addPattern("108492", p108492)
+	err = m.addPattern("108492", p108492, BuiltForComfort)
 	if err != nil {
 		t.Error("!? " + err.Error())
 	}
-	fmt.Println(matcherStats(m))
+	fmt.Println(coreMatcherStats(m))
 
 	var matches []X
 	lines := [][]byte{[]byte(jCranleigh), []byte(j108492)}
@@ -92,7 +92,7 @@ func TestMySoftwareHatesMe(t *testing.T) {
 	Bpat := `{"properties": {"STREET":[ {"shellstyle": "B*"} ] } }`
 	EEEpat := `{"properties": {"STREET":[ {"shellstyle": "*E*E*E*"} ] } }`
 
-	if m.addPattern("EEE", EEEpat) != nil {
+	if m.addPattern("EEE", EEEpat, BuiltForComfort) != nil {
 		t.Error("Huh add?")
 	}
 	matches, _ := m.matchesForJSONEvent([]byte(line))
@@ -101,8 +101,8 @@ func TestMySoftwareHatesMe(t *testing.T) {
 	}
 
 	m = newCoreMatcher()
-	_ = m.addPattern("B", Bpat)
-	_ = m.addPattern("EEE", EEEpat)
+	_ = m.addPattern("B", Bpat, BuiltForComfort)
+	_ = m.addPattern("EEE", EEEpat, BuiltForComfort)
 
 	matches, _ = m.matchesForJSONEvent([]byte(line))
 	if !containsX(matches, "B") {
@@ -113,9 +113,10 @@ func TestMySoftwareHatesMe(t *testing.T) {
 	}
 }
 
-// exercise shellstyle matching a little, is much faster than TestCityLots because it's only working wth one field
+// exercise shellstyle matching a little, is much faster than TestCityLots because it's only working with one field
 func TestBigShellStyle(t *testing.T) {
 	lines := getCityLotsLines(t)
+	bufs := newNfaBuffers()
 	m := newCoreMatcher()
 
 	wanted := map[X]int{
@@ -132,19 +133,19 @@ func TestBigShellStyle(t *testing.T) {
 
 	for letter := range wanted {
 		pat := fmt.Sprintf(`{"properties": {"STREET":[ {"shellstyle": "%s*"} ] } }`, letter)
-		err := m.addPattern(letter, pat)
+		err := m.addPattern(letter, pat, BuiltForComfort)
 		if err != nil {
 			t.Errorf("err on %c: %s", letter, err.Error())
 		}
 	}
 
 	for funk := range funky {
-		err := m.addPattern(funk, funk.(string))
+		err := m.addPattern(funk, funk.(string), BuiltForComfort)
 		if err != nil {
 			t.Errorf("err on %s: %s", funk, err.Error())
 		}
 	}
-	fmt.Println(matcherStats(m))
+	fmt.Println(coreMatcherStats(m))
 
 	lCounts := make(map[X]int)
 	before := time.Now()
@@ -154,7 +155,7 @@ func TestBigShellStyle(t *testing.T) {
 		if err != nil {
 			t.Error("Flatten: " + err.Error())
 		}
-		matches, err := m.matchesForFields(fields)
+		matches, err := m.matchesForFields(fields, bufs)
 		if err != nil {
 			t.Error("Matches4JSON: " + err.Error())
 		}
@@ -184,13 +185,12 @@ func TestBigShellStyle(t *testing.T) {
 	}
 }
 
-// TestPatternAddition adds a whole lot of string-only rules as fast as possible  The profiler says that the
+// TestPatternAddition adds a whole lot of string-only rules as fast as possible. The profiler says that the
 // performance is totally dominated by the garbage-collector thrashing, in particular it has to allocate
 // ~220K smallTables.  Tried https://blog.twitch.tv/en/2019/04/10/go-memory-ballast-how-i-learnt-to-stop-worrying-and-love-the-heap/
 // but it doesn't seem to help.
-// TODO: Add shellstyle patterns
 func TestPatternAddition(t *testing.T) {
-	w := worder{0, readWWords(t)}
+	w := worder{0, readWWords(t, 0)}
 
 	var msBefore, msAfter runtime.MemStats
 
@@ -209,7 +209,7 @@ func TestPatternAddition(t *testing.T) {
 			fieldCount += 200
 			pat = pat + `] } }`
 			pName := string(w.next()) + string(w.next())
-			err := m.addPattern(pName, pat)
+			err := m.addPattern(pName, pat, BuiltForComfort)
 			if err != nil {
 				t.Error("addPattern " + err.Error())
 			}
@@ -218,7 +218,7 @@ func TestPatternAddition(t *testing.T) {
 	runtime.ReadMemStats(&msAfter)
 	delta := 1.0 / 1000000.0 * float64(msAfter.Alloc-msBefore.Alloc)
 	fmt.Printf("before %d, after %d, delta %f\n", msBefore.Alloc, msAfter.Alloc, delta)
-	fmt.Println("statsAccum:" + matcherStats(m))
+	fmt.Println("statsAccum:" + coreMatcherStats(m))
 	elapsed := float64(time.Since(before).Milliseconds())
 	perSecond := float64(fieldCount) / (elapsed / 1000.0)
 	fmt.Printf("%.2f fields/second\n\n", perSecond)
@@ -235,13 +235,15 @@ func (w *worder) next() []byte {
 	return w.lines[w.index]
 }
 
-func readWWords(t *testing.T) [][]byte {
-	t.Helper()
+// readWWords reads up to maxWords words from testdata/wwords.txt.
+// Pass 0 to read all words.
+func readWWords(tb testing.TB, maxWords int) [][]byte {
+	tb.Helper()
 
 	// that's a list from the Wordle source code with a few erased to get a prime number
 	file, err := os.Open("testdata/wwords.txt")
 	if err != nil {
-		t.Error("Can't open file: " + err.Error())
+		tb.Fatal("Can't open file: " + err.Error())
 	}
 	defer func(file *os.File) {
 		_ = file.Close()
@@ -250,11 +252,12 @@ func readWWords(t *testing.T) [][]byte {
 	buf := make([]byte, oneMeg)
 	scanner.Buffer(buf, oneMeg)
 
-	lineCount := 0
 	var lines [][]byte
 	for scanner.Scan() {
-		lineCount++
 		lines = append(lines, []byte(scanner.Text()))
+		if maxWords > 0 && len(lines) >= maxWords {
+			break
+		}
 	}
 	return lines
 }

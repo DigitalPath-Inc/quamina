@@ -1,20 +1,14 @@
 # Quamina
 
-## ALERTWest Fork
-This repo is a fork of the original Quamina repo, with the goal of improving pattern compilation performance. The main difference is in [trie.go](trie.go), which uses a trie to first assemble the structure, then converts that to a `coreMatcher`.
-
-### `WithPatterns` vs `AddPattern`
-
-The standard Quamina library uses `(Quamina).AddPattern` to add patterns to the matcher. The handling only adds a single pattern at a time, and does so via creating a new matching structure and merging it with the existing one.
-
-This fork adds a `WithPatterns` option to `New`, which allows for bulk pattern addition. This is done by first creating a `map[X]string` and passing that to `New` via `WithPatterns`. The `New` function will then create a `coreMatcher` directly, avoiding the need to merge multiple structures. This is very fast for a large number of patterns/matching values, on a low number of fields, but has lots of opportunities to be improved. 
-
-> [!IMPORTANT]
-> `WithPatterns` currently only supports exact string pattern types.
+[![Latest Release](https://img.shields.io/github/release/timbray/quamina.svg?logo=github&style=flat-square)](https://github.com/timbray/quamina/releases/latest)
+[![Tests](https://github.com/timbray/quamina/actions/workflows/go-unit-tests.yaml/badge.svg)](https://github.com/timbray/quamina/actions/workflows/go-unit-tests.yaml)
+[![codecov](https://codecov.io/gh/timbray/quamina/branch/main/graph/badge.svg?token=TC7MW723JO)](https://codecov.io/gh/timbray/quamina)
+[![timbray/quamina](https://img.shields.io/github/go-mod/go-version/timbray/quamina)](https://github.com/timbray/quamina)
+[![Go Reference](https://pkg.go.dev/badge/quamina.net/go/quamina/v2.svg)](https://pkg.go.dev/quamina.net/go/quamina/v2)
+[![0 dependencies!](https://0dependencies.dev/0dependencies.svg)](https://0dependencies.dev)
 
 ### Fast pattern-matching library
 
-\
 **Quamina** implements a data type with APIs to
 create an instance and add multiple **Patterns** to it,
 and then query data objects called **Events** to
@@ -29,7 +23,7 @@ Quamina [welcomes contributions](CONTRIBUTING.md).
 
 ### Status
 
-This is version 1.5.1 of Quamina. In future, the API will be changed only additively.
+This is version 2.0.1 of Quamina. In future, the API will be changed only additively.
 
 Note that we have documented more APIs than are actually
 fully implemented, with the intent of showing direction.
@@ -90,50 +84,33 @@ The following Patterns would match it:
 {"Foo": [ { "exists": false } ] }
 ```
 ```json
-{
-  "Image": {
-    "Thumbnail": { "Url": [ { "wildcard": "*9943" } ] }
-  }
-}
+{ "Image": { "Thumbnail": { "Url": [ { "wildcard": "*9943" } ] } } }
 ```
 ```json
-{
-  "Image": {
-    "Thumbnail": { "Url":
-      [ { "wildcard": "http://www.example.com/*" } ] }
-  }
-}
+{ "Image": { "Thumbnail": { "Url": [ { "wildcard": "https://www.example.*/*9943" } ] } } }
 ```
 ```json
-{
-  "Image": {
-    "Thumbnail": { "Url":
-      [ { "wildcard": "http://www.example.*/*9943" } ] }
-  }
-}
+{ "Image": { "Title": [ {"anything-but":  ["Pikachu", "Eevee"] } ] } }
 ```
 ```json
-{
-  "Image": {
-    "Title": [ {"anything-but":  ["Pikachu", "Eevee"] } ]
-  }
-}
+{ "Image": { "Thumbnail": { "Url": [ "a", { "prefix": "https:" } ] } } } 
 ```
 ```json
-{
-  "Image": {
-    "Thumbnail": {
-      "Url": [ "a", { "prefix": "https:" } ] }
-  }
-} 
+{ "Image": { "Title": [ { "equals-ignore-case": "VIEW FROM 15th FLOOR" } ] } }
 ```
 ```json
-{
-  "Image": {
-    "Title": [ { "equals-ignore-case": "VIEW FROM 15th FLOOR" } ] 
-  }
-}
+{ "Image": { "Title": [ { "regexp": "View .... [0-9][0-9][rtn][dh] Floor" } ] } }
 ```
+```json
+{ "Image": { "Title": [ { "regexp": "(View)?( down)? from 15th (Floor|Storey)" } ] } }
+```
+```json
+{ "Image": { "Thumbnail": { "Url": [ "a", { "regexp": "https://www.example.com/[^0-9/]+/[1-9]+" } ] } } } 
+```
+```json
+{ "Image": { "Title": [ { "regexp": "[~p{L}~p{Zs}~p{Nd}]*" } ] } }
+```
+
 The syntax and semantics of Patterns are fully specified
 in [Patterns in Quamina](PATTERNS.md).
 
@@ -196,7 +173,7 @@ q, err := quamina.New(quamina.WithMediaType("application/json"))
 ```
 The meanings of the `Option` functions are:
 
-`WithMediaType`: In the futue, Quamina will support
+`WithMediaType`: In the future, Quamina will support
 Events not just in JSON but in other formats such as
 Avro, Protobufs, and so on. This option will make sure
 to invoke the correct Flattener. At the moment, the only
@@ -212,12 +189,49 @@ occasional stop-the-world Quamina rebuilds. (We plan
 to improve this.)
 
 `WithPatternStorage`: If you provide an argument that
-supports the `LivePatternStorage` API, Quamina will
+supports the `LivePatternsState` API, Quamina will
 use it to maintain a list of which Patterns have currently
 been added but not deleted. This could be useful if you
 wanted to rebuild Quamina instances for sharded
 processing or after a system failure. ***Note: Not
 yet implemented.***
+
+### Comfort vs Speed
+
+```go
+func (q *Quamina) SetMatcherBuildMode(mode MatcherBuildMode)
+func (q *Quamina) GetMatcherBuildMode() MatcherBuildMode
+```
+There are two Matcher Build Modes, `BuiltForComfort` and `BuiltForSpeed`.  The mode controls the
+behavior of the `AddPattern()` API. When in the default `BuiltForComfort` mode, adding Patterns
+which include wildcards and regexps will result in `MatchesForEvent()` performance that declines
+roughly linearly as a function of the number of such Patterns added.
+
+When `AddPattern()` is in `BuiltForSpeed` mode, adding such Patterns results in `MatchesForEvent()`
+performance that is only weakly related to the number of Patterns added and in practice is much 
+faster. However, certain combinations of such Patterns can result in explosive growth of the size of the Matcher
+and `AddPattern()` latency.  This can be as bad as O(2**N) in the number of Patterns. The use of the 
+`GetMatcherStats()` API is advised to investigate the effects of the combination of this setting with
+an app's typical usage of `AddPattern()` in production.
+
+Thanks to [Willie Dixon](https://www.youtube.com/watch?v=UfnctFIh9aE).
+
+### Matcher Statistics
+
+Certain combinations of regular-expression and wildcard Patterns, and the current Matcher 
+Build Mode, can cause Quamina's memory structures to grow excessively large and slow 
+down `AddPattern()` calls. The slowdown can be related to the size of the matcher data
+structures, in some cases linearly.
+
+```go
+func (q *Quamina) GetMatcherStats() map[string]float64
+```
+The return value is a map with string keys to allow for the addition of metrics in
+the future, should they be found useful. At the moment, the only metric known to be valuable 
+is the total amount of memory, in bytes, used in the Event-matching data structure; the 
+map key is “bytes”.
+
+This API may produce incorrect results if run while `AddPattern()` calls are in progress. 
 
 ### Data APIs
 
@@ -231,9 +245,11 @@ X is defined as `any`.
 The Pattern is provided in the second argument string which
 must be a JSON object as exemplified above in this document.
 
-The `error` return is used to signal invalid Pattern
+The `error` return is used to signal either invalid Pattern
 structure, which could be bad UTF-8 or malformed JSON
-or leaf values which are not provided as arrays.
+or leaf values which are not provided as arrays, or that
+this Pattern was sufficiently large or deeply nested that 
+building the matcher structures caused a memory exception.
 
 As many Patterns as desired can be added to a Quamina
 instance. More than one Pattern can be added with the
@@ -254,7 +270,9 @@ internal failure of Quamina’s storage system.
 func (q *Quamina) MatchesForEvent(event []byte) ([]X, error)
 ```
 The `error` return value is nil unless there was an
-error in the encoding of the Event.
+error in the encoding of the Event, or it
+was sufficiently large or deeply nested that
+processing it caused a memory exception
 
 The `[]X` return slice may be empty if none of the Patterns
 match the provided Event.
@@ -273,13 +291,12 @@ func (q *Quamina) Copy() *Quamina
 This generates a copy of the target instance. Such
 copies may safely run in parallel in different
 goroutines executing any combination of
-`MatchesForEvent()`, `AddPattern()`, and
+`MatchesForEvent()`, `AddPattern()`, `GetMatcherStats()` and
 `DeletePattern()` calls. There is a significant
 performance penalty if a high proportion of these
 calls are `AddPattern()`.
 
-Note that the `Copy()` API is somewhat expensive, and
-that a Quamina instance exhibits “warm-up” behavior,
+Note that a freshly created or copied Quamina instance exhibits “warm-up” behavior,
 i.e. the performance of `MatchesForEvent()` improves
 slightly upon repeated calls, especially over the
 first few calls. The conclusion is that, for maximum efficiency, once
@@ -289,20 +306,29 @@ Events through it as is practical.
 
 ### `AddPattern()` Performance
 
-Tens of thousands of Patterns per second can
+Tens of thousands of Patterns per second can usually
 be added to a Quamina instance; the in-memory data structure will
 become larger, but not unreasonably so. The amount of
 available memory is the only significant limit to the
 number of patterns an instance can carry.
 
-### `MatchesForEvent()` Performance
+If the Patterns being added include neither “wildcard” nor “regexp” flavors,
+the performance is only moderately affected by the number added. 
+However, the addition of wildcard or regexp Patterns will cause a
+slowdown in the `AddPattern()` call which is slightly worse than
+linear, increasing at about the same rate as
+the size of the Pattern-matching data structures; that size
+can be queried using the `GetMatcherStats()` API.
+
+### `MatchesForEvent()` Performance (no regexp)
+
+The following discussion covers Patterns which do not include `regexp`
+or `wildcard` or `shellstyle` matchers.
 
 I used to say that the performance of
 `MatchesForEvent` was O(1) in the number of
 Patterns. That’s probably a reasonable way to think
-about it, because it’s *almost* right, except in the
-case where a very large number of `wildcard` patterns
-have been added; this is discussed in the next section.
+about it, because it’s *almost* right.
 
 To be correct, the performance is a little worse than
 O(N) where N is the average number of unique fields in an
@@ -320,8 +346,7 @@ growth in the size of the necessary data structures.
 
 However, adding another pattern that looks like the
 following, in the case that the Events have a top-level
-`number` field, would decrease the performance by a factor of
-roughly 2:
+`number` field, would decrease the performance noticeably:
 ```json
 {"number": [11, 22, 33]}
 ```
@@ -339,28 +364,38 @@ can avoid processing every byte of the event. It’s complicated.
 
 Once the list of fields which might match a Pattern is
 extracted, the cost of traversing the automaton
-is at most N, the number of fields left after discarding.
+is linear in the number of fields left after discarding.
 
 So, adding a new Pattern that only mentions fields which are
 already mentioned in previous Patterns is effectively free,
 i.e. O(1) in terms of run-time performance.
 
-### Quamina instances with large numbers of `wildcard` Patterns
+### Performance with regular expressions
 
-A study of the theory of finite automata reveals that processing
-regular-expression constructs such as `*` increases the complexity of
-the automata necessary to match them. It develops that when
-a large number of such automata are compiled together, the merged
-output can contain a high degree of nondeterminism which can result
-in a drastic slowdown.
+The use of Patterns with `regexp` or `shellstyle` or `wildcard` can
+cause significant slowdowns in the performance of
+`MatchesForEvent()`.  The slowdown is slightly worse than linear and
+is very similar to the increase in the total memory used by the Pattern-matching
+data structures. The amount of total memory can be retrieved using
+the `GetMatcherStats()` API.
 
-A fuzz test which adds a pattern for each of 12,959 5-letter words with
-one `*` embedded in each at a random offset slows matching speed down to 
-below 10,000/second, in stark contrast to most Quamina instances, which 
-can achieve millions of matches/second.
+The performance of `MatchesForEvent()` in this situation can be improved
+dramatically by putting Quamina in `BuiltForSpeed` build mode.  The cost of doing
+this is paid in worse `AddPattern()` performance and is not really an issue
+until you get into hundreds of such patterns.
 
-This slowdown is under active investigation and it is possible that the
-situation will improve.
+### Compiling for specific architectures
+
+Go compiles with [default CPU capabilities](https://go.dev/wiki/MinimumRequirements)
+for each architecture. In particular, its [AMD64](https://go.dev/wiki/MinimumRequirements#amd64)
+defaults are quite conservative. Changing this default can yield up to 10% improvements
+with no code changes, if you know the target machines' capabilities.
+
+AMD64 test machine: AMD Threadripper 2920X machine with 64GB of RAM. Tested level v1 vs v3. The performance improvements were benchmark-dependent, so it's best to check it on your own workload.
+
+No significant improvements have been measured by adjusting the [ARM64](https://go.dev/wiki/MinimumRequirements#arm64) defaults.
+
+ARM64 test machines: various Apple Silicon chips, M1 Ultra to M5.
 
 ### Further documentation
 
@@ -368,6 +403,11 @@ There is a series of blog posts entitled
 [Quamina Diary](https://www.tbray.org/ongoing/What/Technology/Quamina%20Diary/)
 that provides a detailed discussion of the design decisions
 at a length unsuitable for in-code comments.
+
+### Memory Budgets
+
+The `SetMemoryBudget()` and `GetMemoryBudget()` APIs are deprecated. As implemented
+they were too expensive and occasionally nondeterministic.
 
 ### Name
 
@@ -382,10 +422,12 @@ colonies before slavery was abolished.
 
 @timbray: v0.0 and patches.
 
-@jsmorph: `Pruner` and concurrency testing.
+@jsmorph: [Pruner](README-pruner.md) and concurrency testing.
 
 @embano1: CI/CD and project structure.
 
 @yosiat: Flattening optimization.
 
-@arnehormann: compact high-precision number representation.
+@arnehormann: Compact high-precision number representation.
+
+@sayrer: Generation and curation of AI-based optimizations.

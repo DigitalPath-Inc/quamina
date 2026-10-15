@@ -9,8 +9,9 @@ package quamina
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -24,6 +25,15 @@ import (
 type coreMatcher struct {
 	updateable atomic.Pointer[coreFields]
 	lock       sync.Mutex
+	// closureBufs is scratch for epsilon-closure computation, reused across
+	// every AddPattern. addPattern holds lock for the whole build, so it is
+	// never accessed concurrently. Lives here (not a sync.Pool) so the maps are
+	// never evicted mid-build; see epsilonClosureInto.
+	closureBufs *closureBuffers
+	// compact is non-nil once Patterns have been added with addPatterns. The automaton then shares structure
+	// and must not be updated in place, so every subsequent addition goes through the compactBuilder.
+	// Guarded by lock.
+	compact *compactBuilder
 }
 
 // coreFields groups the updateable fields in coreMatcher.
@@ -34,15 +44,13 @@ type coreMatcher struct {
 type coreFields struct {
 	state        *fieldMatcher
 	segmentsTree *segmentsTree
-	nfaMeta      *nfaMetadata
 }
 
 func newCoreMatcher() *coreMatcher {
-	m := coreMatcher{}
+	m := coreMatcher{closureBufs: newClosureBuffers()}
 	m.updateable.Store(&coreFields{
 		state:        newFieldMatcher(),
 		segmentsTree: newSegmentsIndex(),
-		nfaMeta:      &nfaMetadata{},
 	})
 	return &m
 }
@@ -51,48 +59,102 @@ func (m *coreMatcher) fields() *coreFields {
 	return m.updateable.Load()
 }
 
-// analyze traverses all the different per-field NFAs and gathers metadata that can be
-// used to optimize traversal. At the moment, all that it gathers is the maximum outdegree
-// from any smallTable, where outdegree is the epsilon count plus the largest number of
-// targets jumped to from a single byte transition. Can be called any time but normally
-// you'd do this after you've added a bunch of patterns and are ready to start matching
-func (m *coreMatcher) analyze() {
-	// only one thread can be updating at a time
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	fields := m.fields()
-	fields.state.gatherMetadata(fields.nfaMeta)
-	m.updateable.Store(fields)
-}
-
 // addPattern - the patternBytes is a JSON text which must be an object. The X is what the matcher returns to indicate
 // that the provided pattern has been matched. In many applications it might be a string which is the pattern's name.
-func (m *coreMatcher) addPattern(x X, patternJSON string) error {
-	return m.addPatternWithPrinter(x, patternJSON, sharedNullPrinter)
+func (m *coreMatcher) addPattern(x X, patternJSON string, buildMode MatcherBuildMode) error {
+	return m.addPatternWithPrinter(x, patternJSON, sharedNullPrinter, buildMode)
 }
 
 // addPatternWithPrinter can be called from debugging and under-development code to allow viewing pretty-printed
 // NFAs
-func (m *coreMatcher) addPatternWithPrinter(x X, patternJSON string, printer printer) error {
-	patternFields, err := patternFromJSON([]byte(patternJSON))
+func (m *coreMatcher) addPatternWithPrinter(x X, patternJSON string, printer printer, buildMode MatcherBuildMode) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.New("call to AddPattern caused a crash, probably because the Pattern is too large or too deeply nested")
+		}
+	}()
+
+	patternFields, err := parseSortedPattern(patternJSON)
 	if err != nil {
 		return err
 	}
-
-	// sort the pattern fields lexically
-	sort.Slice(patternFields, func(i, j int) bool { return patternFields[i].path < patternFields[j].path })
 
 	// only one thread can be updating at a time
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
+	if m.compact != nil {
+		m.compact.build(m, []parsedPattern{{x: x, fields: patternFields}}, buildMode)
+		return nil
+	}
+	m.addFieldsLocked(x, patternFields, printer, buildMode)
+	return nil
+}
+
+func parseSortedPattern(patternJSON string) ([]*patternField, error) {
+	patternFields, err := patternFromJSON([]byte(patternJSON))
+	if err != nil {
+		return nil, err
+	}
+
+	// sort the pattern fields lexically
+	slices.SortFunc(patternFields, func(a, b *patternField) int { return cmp.Compare(a.path, b.path) })
+	return patternFields, nil
+}
+
+// addPatterns adds a batch of Patterns. If the matcher is empty, or was itself built by addPatterns, the
+// batch is compiled with the compactBuilder; otherwise the Patterns are added one at a time.
+func (m *coreMatcher) addPatterns(patterns []Pattern, buildMode MatcherBuildMode) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.New("call to AddPatterns caused a crash, probably because a Pattern is too large or too deeply nested")
+		}
+	}()
+
+	parsed := make([]parsedPattern, 0, len(patterns))
+	for _, p := range patterns {
+		patternFields, err := parseSortedPattern(p.JSON)
+		if err != nil {
+			return err
+		}
+		parsed = append(parsed, parsedPattern{x: p.X, fields: patternFields})
+	}
+
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	if m.compact == nil {
+		if !m.isEmpty() {
+			for _, p := range parsed {
+				m.addFieldsLocked(p.x, p.fields, sharedNullPrinter, buildMode)
+			}
+			return nil
+		}
+		m.compact = newCompactBuilder()
+	}
+	m.compact.build(m, parsed, buildMode)
+	return nil
+}
+
+func (m *coreMatcher) isEmpty() bool {
+	start := m.fields().state.fields()
+	return len(start.transitions) == 0 && len(start.matches) == 0 &&
+		len(start.existsTrue) == 0 && len(start.existsFalse) == 0
+}
+
+// addFieldsLocked adds a parsed Pattern, whose fields must be sorted, to the automaton in place. The caller
+// must hold m.lock.
+func (m *coreMatcher) addFieldsLocked(x X, patternFields []*patternField, printer printer, buildMode MatcherBuildMode) {
+	// Reuse the closure scratch but empty it each build so its maps hold only
+	// this pattern's working set, not every state in the matcher.
+	m.closureBufs.reset()
+
 	// we build up the new coreMatcher state in freshStart so that we can atomically switch it in once complete
+
 	freshStart := &coreFields{}
 	currentFields := m.fields()
 	freshStart.segmentsTree = currentFields.segmentsTree.copy()
 	freshStart.state = currentFields.state
-	freshStart.nfaMeta = currentFields.nfaMeta
 
 	// Add paths to the segments tree index.
 	for _, field := range patternFields {
@@ -121,9 +183,8 @@ func (m *coreMatcher) addPatternWithPrinter(x X, patternJSON string, printer pri
 			case existsFalseType:
 				ns = state.addExists(false, field)
 			default:
-				ns = state.addTransition(field, printer)
+				ns = state.addTransition(field, printer, m.closureBufs, buildMode)
 			}
-
 			nextStates = append(nextStates, ns...)
 		}
 		states = nextStates
@@ -135,8 +196,6 @@ func (m *coreMatcher) addPatternWithPrinter(x X, patternJSON string, printer pri
 		endState.addMatch(x)
 	}
 	m.updateable.Store(freshStart)
-
-	return err
 }
 
 // deletePattern not implemented by coreMatcher
@@ -149,15 +208,30 @@ func (m *coreMatcher) deletePatterns(_ X) error {
 // This is a leftover from previous times, is only used by tests, but it's used by a *lot*
 // and it's a convenient API for testing.
 func (m *coreMatcher) matchesForJSONEvent(event []byte) ([]X, error) {
-	return m.matchesForJSONWithFlattener(event, newJSONFlattener())
+	f := flattenerPool.Get().(*flattenJSON)
+	defer flattenerPool.Put(f)
+	return m.matchesForJSONWithFlattener(event, f)
 }
 
 // if your test is a benchmark, call newJSONFlattener and pass it to this routine, matchesForJSONWithFlattener
 // because newJSONFlattener() is fairly heavyweight and you want it out of the benchmark loop
 func (m *coreMatcher) matchesForJSONWithFlattener(event []byte, f Flattener) ([]X, error) {
 	fields, _ := f.Flatten(event, m.getSegmentsTreeTracker())
-	return m.matchesForFields(fields)
+	bufs := nfaBuffersPool.Get().(*nfaBuffers)
+	defer func() {
+		// Detach the result slice from bufs before returning to the pool: the
+		// returned []X aliases bufs.resultBuf's backing array, and a subsequent
+		// pool user must not be able to write through it.
+		bufs.resultBuf = make([]X, 0, 16)
+		nfaBuffersPool.Put(bufs)
+	}()
+	return m.matchesForFields(fields, bufs)
 }
+
+var (
+	nfaBuffersPool = sync.Pool{New: func() any { return newNfaBuffers() }}
+	flattenerPool  = sync.Pool{New: func() any { return newJSONFlattener().(*flattenJSON) }}
+)
 
 // emptyFields returns a fake []Field list containing a single field whose name is lexically greater than any that
 // can occur in real data
@@ -174,77 +248,45 @@ func emptyFields() []Field {
 	}
 }
 
-// fieldsList exists to support the sort.Sort call in matchesForFields()
-type fieldsList []Field
-
-func (a fieldsList) Len() int {
-	return len(a)
-}
-func (a fieldsList) Less(i, j int) bool {
-	return bytes.Compare(a[i].Path, a[j].Path) < 0
-}
-func (a fieldsList) Swap(i, j int) {
-	a[i], a[j] = a[j], a[i]
-}
-
 // matchesForFields takes a list of Field structures, sorts them by pathname, and launches the field-matching
 // process. The fields in a pattern to match are similarly sorted; thus running an automaton over them works.
-// No error can be returned but the matcher interface requires one, and it is used by the pruner implementation
-func (m *coreMatcher) matchesForFields(fields []Field) ([]X, error) {
+func (m *coreMatcher) matchesForFields(fields []Field, bufs *nfaBuffers) (matches []X, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.New("call to MatchesForEvent caused a crash, probably because the Event is too large or too deeply nested")
+		}
+	}()
+
 	if len(fields) == 0 {
 		fields = emptyFields()
 	} else {
-		sort.Sort(fieldsList(fields))
+		slices.SortFunc(fields, func(a, b Field) int { return bytes.Compare(a.Path, b.Path) })
 	}
-	matches := newMatchSet()
-	cmFields := m.fields()
 
-	// nondeterministic states in this matcher's automata have a list of current states and
-	// transition to a list of next states. This requires memory shuffling, which we want to
-	// minimize at matching/traversal time. Whatever we do, we want to keep one pair of
-	// buffers around for an entire matchesForFields call, bufs is that.
-	// In theory, there should be significant savings to be had by pre-allocating those buffers,
-	// or managing a pool of them with sync.Pool, or some such. However, adding any straightforward
-	// pre-allocation causes massive slowdown on the mainstream cases such as EXACT_MATCH in
-	// TestRulerCl2(). My hypothesis is that the DFA-like processing there is so efficient that
-	// anything that does actual allocation is death.
-	// Thus was created the analyze() call, which traverses the whole coreMatcher tree and returns
-	// the maximum state outdegree in the nfaMeta data structure, then pre-allocates a quality
-	// estimate of what's going to be used. This did in fact produce an increase in performnance,
-	// but that improvement was a small single-digit percentage and things that made one of EXACT,
-	// ANYTHING_BUT, and SHELLSTYLE matches go faster made one of the others go slower.
-	// Complicating factor: even if there is some modest amount of garbage collection, the Go
-	// runtime seems to be very good at shuffling it off into another thread so that the actual
-	// pattern-matching throughput doesn't suffer much. That's true at least on my massively
-	// over-equipped M2 MBPro, but probably not on some miserable cloud event-handling worker.
-	// Conclusion: I dunno. I left the analyze() func in but for now, don't use its results in
-	// production.
-	var bufs = &bufpair{}
-	/*
-		if cmFields.nfaMeta.maxOutDegree < 2 {
-			bufs = &bufpair{}
-		} else {
-			bufferSize := cmFields.nfaMeta.maxOutDegree * 2
-			bufs = &bufpair{
-				buf1: make([]*faState, 0, bufferSize),
-				buf2: make([]*faState, 0, bufferSize),
-			}
-		}
-	*/
+	// Reuse the matchSet from buffers to reduce allocations
+	matchSet := bufs.getMatches()
+	matchSet.reset()
+
+	// Reset transmap depth for this match operation
+	if tm := bufs.transmap; tm != nil {
+		tm.resetDepth()
+	}
+	cmFields := m.fields()
 
 	// for each of the fields, we'll try to match the automaton start state to that field - the tryToMatch
 	// routine will, in the case that there's a match, call itself to see if subsequent fields after the
 	// first matched will transition through the machine and eventually achieve a match
 	for i := 0; i < len(fields); i++ {
-		tryToMatch(fields, i, cmFields.state, matches, bufs)
+		tryToMatch(fields, i, cmFields.state, matchSet, bufs)
 	}
-	return matches.matches(), nil
+	matches = matchSet.matchesInto(bufs.resultBuf[:0])
+	return
 }
 
 // tryToMatch tries to match the field at fields[index] to the provided state. If it does match and generate
 // 1 or more transitions to other states, it calls itself recursively to see if any of the remaining fields
 // can continue the process by matching that state.
-func tryToMatch(fields []Field, index int, state *fieldMatcher, matches *matchSet, bufs *bufpair) {
+func tryToMatch(fields []Field, index int, state *fieldMatcher, matches *matchSet, bufs *nfaBuffers) {
 	stateFields := state.fields()
 
 	// transition on exists:true?
@@ -256,12 +298,15 @@ func tryToMatch(fields []Field, index int, state *fieldMatcher, matches *matchSe
 				tryToMatch(fields, nextIndex, existsTrans, matches, bufs)
 			}
 		}
+		checkExistsFalse(existsTrans.fields(), fields, index, matches, bufs)
 	}
 
 	// an exists:false transition is possible if there is no matching field in the event
 	checkExistsFalse(stateFields, fields, index, matches, bufs)
 
 	// try to transition through the machine
+	tm := bufs.getTransmap()
+	tm.push()
 	nextStates := state.transitionOn(&fields[index], bufs)
 
 	// for each state in the possibly-empty list of transitions from this state on fields[index]
@@ -282,9 +327,10 @@ func tryToMatch(fields []Field, index int, state *fieldMatcher, matches *matchSe
 		// fields and that in fact such a field does not exist. That state would be left hanging. So…
 		checkExistsFalse(nextStateFields, fields, index, matches, bufs)
 	}
+	tm.pop()
 }
 
-func checkExistsFalse(stateFields *fmFields, fields []Field, index int, matches *matchSet, bufs *bufpair) {
+func checkExistsFalse(stateFields *fmFields, fields []Field, index int, matches *matchSet, bufs *nfaBuffers) {
 	for existsFalsePath, existsFalseTrans := range stateFields.existsFalse {
 		// it seems like there ought to be a more state-machine-idiomatic way to do this, but
 		// I thought of a few and none of them worked.  Quite likely someone will figure it out eventually.

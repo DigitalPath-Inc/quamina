@@ -35,18 +35,6 @@ func (m *fieldMatcher) update(fields *fmFields) {
 	m.updateable.Store(fields)
 }
 
-func (m *fieldMatcher) gatherMetadata(meta *nfaMetadata) {
-	for _, vm := range m.fields().transitions {
-		vm.gatherMetadata(meta)
-	}
-	for _, fm := range m.fields().existsTrue {
-		fm.gatherMetadata(meta)
-	}
-	for _, fm := range m.fields().existsFalse {
-		fm.gatherMetadata(meta)
-	}
-}
-
 func (m *fieldMatcher) addMatch(x X) {
 	current := m.fields()
 	newFields := &fmFields{
@@ -105,7 +93,7 @@ func (m *fieldMatcher) addExists(exists bool, field *patternField) []*fieldMatch
 	return []*fieldMatcher{trans}
 }
 
-func (m *fieldMatcher) addTransition(field *patternField, printer printer) []*fieldMatcher {
+func (m *fieldMatcher) addTransition(field *patternField, printer printer, bufs *closureBuffers, buildMode MatcherBuildMode) []*fieldMatcher {
 	// we build the new updateable state in freshStart so that we can blast it in atomically once computed
 	current := m.fields()
 	freshStart := &fmFields{
@@ -131,7 +119,8 @@ func (m *fieldMatcher) addTransition(field *patternField, printer printer) []*fi
 	//  cases where this doesn't happen and reduce the number of fieldMatchStates
 	var nextFieldMatchers []*fieldMatcher
 	for _, val := range field.vals {
-		nextFieldMatchers = append(nextFieldMatchers, vm.addTransition(val, printer))
+		nextFieldMatcher := vm.addTransition(val, printer, bufs, buildMode)
+		nextFieldMatchers = append(nextFieldMatchers, nextFieldMatcher)
 	}
 	m.update(freshStart)
 	return nextFieldMatchers
@@ -141,7 +130,7 @@ func (m *fieldMatcher) addTransition(field *patternField, printer printer) []*fi
 // or nil if no transitions are possible.  An example of name/value that could produce multiple next states
 // would be if you had the pattern { "a": [ "foo" ] } and another pattern that matched any value with
 // a prefix of "f".
-func (m *fieldMatcher) transitionOn(field *Field, bufs *bufpair) []*fieldMatcher {
+func (m *fieldMatcher) transitionOn(field *Field, bufs *nfaBuffers) []*fieldMatcher {
 	// are there transitions on this field name?
 	valMatcher, ok := m.fields().transitions[string(field.Path)]
 	if !ok {

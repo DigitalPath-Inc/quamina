@@ -1,8 +1,52 @@
 package quamina
 
-import "fmt"
+import (
+	"fmt"
+)
 
-// TODO: add stats for average and max smallTable fanout
+/*
+func nfaBufStats(bufs *nfaBuffers) (string, *faState) {
+	b1 := fmt.Sprintf("buf1 %d", cap(bufs.buf1))
+	b2 := fmt.Sprintf("buf2 %d", cap(bufs.buf2))
+	ecLen := len(bufs.eClosure.closures)
+	tot := 0
+	longest := 0
+	var lState *faState
+	for s, ec := range bufs.eClosure.closures {
+		l := len(ec)
+		if l > longest {
+			longest = l
+			lState = s
+		}
+		tot += l
+	}
+	avg := float64(tot) / float64(ecLen)
+	ec := fmt.Sprintf("ec l=%d, avg=%0.1f, max=%d", ecLen, avg, longest)
+	return "b1=" + b1 + ", b2=" + b2 + ", " + ec, lState
+}
+
+func stStats(b *testing.B, m *coreMatcher) string {
+	b.Helper()
+	s := statsAccum{
+		fmVisited: make(map[*fieldMatcher]bool),
+		vmVisited: make(map[*valueMatcher]bool),
+		stVisited: make(map[*smallTable]bool),
+	}
+	fmStats(m.fields().state, &s)
+	avgStSize := "n/a"
+	avgEpSize := "n/a"
+	if s.stTblCount > 0 {
+		avgStSize = fmt.Sprintf("%.3f", float64(s.stEntries)/float64(s.stTblCount))
+	}
+	if s.stEpsilon > 0 {
+		avgEpSize = fmt.Sprintf("%.3f", float64(s.stEpsilon)/float64(s.stTblCount))
+	}
+	return fmt.Sprintf("SmallTables %d (splices %d, avg %s, max %d, epsilons avg %s, max %d) singletons %d",
+		len(s.stVisited), s.splices, avgStSize, s.stMax, avgEpSize, s.stepMax, s.siCount)
+}
+
+*/
+
 type statsAccum struct {
 	fmCount    int
 	fmTblCount int
@@ -15,10 +59,12 @@ type statsAccum struct {
 	stTblCount int
 	stEntries  int
 	stMax      int
+	stDepth    int
 	stEpsilon  int
-	stEpMax    int
+	stepMax    int
 	stVisited  map[*smallTable]bool
 	siCount    int
+	splices    int
 }
 
 func (s *statsAccum) stStats() string {
@@ -29,9 +75,29 @@ func (s *statsAccum) stStats() string {
 	return fmt.Sprintf("SmallTables %d (avg size %s, max %d), singletons %d", s.stCount, avgStSize, s.stMax, s.siCount)
 }
 
-// matcherStats gathers statistics about the size of a coreMatcher, including the average and max fanout sizes of
+/*
+func saStatsPart(t *smallTable) string {
+	s := statsAccum{
+		fmVisited: make(map[*fieldMatcher]bool),
+		vmVisited: make(map[*valueMatcher]bool),
+		stVisited: make(map[*smallTable]bool),
+	}
+	faStats(t, &s)
+	var avgStSize, avgEpSize string
+	if s.stTblCount > 0 {
+		avgStSize = fmt.Sprintf("%.3f", float64(s.stEntries)/float64(s.stTblCount))
+	}
+	if s.stEpsilon > 0 {
+		avgEpSize = fmt.Sprintf("%.3f", float64(s.stEpsilon)/float64(s.stTblCount))
+	}
+	return fmt.Sprintf("SmallTables %d (splices %d, avg %s, max %d, epsilons avg %s, max %d) singletons %d",
+		len(s.stVisited), s.splices, avgStSize, s.stMax, avgEpSize, s.stepMax, s.siCount)
+}
+*/
+
+// coreMatcherStats gathers statistics about the size of a coreMatcher, including the average and max fanout sizes of
 // the transition tables, returning this information in string form
-func matcherStats(m *coreMatcher) string {
+func coreMatcherStats(m *coreMatcher) string {
 	s := statsAccum{
 		fmVisited: make(map[*fieldMatcher]bool),
 		vmVisited: make(map[*valueMatcher]bool),
@@ -49,8 +115,8 @@ func matcherStats(m *coreMatcher) string {
 	}
 	fmPart := fmt.Sprintf("Field matchers: %d (avg size %s, max %d)", s.fmCount, avgFmSize, s.fmMax)
 	vmPart := fmt.Sprintf("Value matchers: %d", s.vmCount)
-	stPart := fmt.Sprintf("SmallTables %d (unique %d, avg %s, max %d, epsilon avg %s, max %d) singletons %d",
-		s.stCount, len(s.stVisited), avgStSize, s.stMax, avgEpSize, s.stEpMax, s.siCount)
+	stPart := fmt.Sprintf("SmallTables %d (splices %d, avg %s, max %d, epsilons avg %s, max %d) singletons %d",
+		len(s.stVisited), s.splices, avgStSize, s.stMax, avgEpSize, s.stepMax, s.siCount)
 
 	return fmPart + "\n" + vmPart + "\n" + stPart
 }
@@ -86,8 +152,8 @@ func vmStats(m *valueMatcher, s *statsAccum) {
 		s.siCount++
 		fmStats(state.singletonTransition, s)
 	}
-	if state.startTable != nil {
-		faStats(state.startTable, s)
+	if state.start != nil {
+		faStats(&state.start.table, s)
 	}
 }
 
@@ -97,28 +163,27 @@ func faStats(t *smallTable, s *statsAccum) {
 		return
 	}
 	s.stVisited[t] = true
-	tSize := len(t.ceilings)
+	tSize := len(t.ceilings) + len(t.epsilons)
+	if t.isJustEpsilons() {
+		s.splices++
+	}
 	if tSize > 1 {
 		if tSize > s.stMax {
 			s.stMax = tSize
 		}
 		s.stTblCount++
 		s.stEntries += len(t.ceilings)
-		s.stEpsilon += len(t.epsilon)
-		if len(t.epsilon) > s.stEpMax {
-			s.stEpMax = len(t.epsilon)
+		s.stEpsilon += len(t.epsilons)
+		if len(t.epsilons) > s.stepMax {
+			s.stepMax = len(t.epsilons)
 		}
 	}
 	for _, next := range t.steps {
 		if next != nil {
-			for _, step := range next.states {
-				if step.fieldTransitions != nil {
-					for _, m := range step.fieldTransitions {
-						fmStats(m, s)
-					}
-				}
-				faStats(step.table, s)
-			}
+			faStats(&next.table, s)
 		}
+	}
+	for _, epsilon := range t.epsilons {
+		faStats(&epsilon.table, s)
 	}
 }

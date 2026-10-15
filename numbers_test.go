@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,7 +14,7 @@ import (
 func BenchmarkNumberMatching(b *testing.B) {
 	// we’re going to have a pattern that matches one of ten random floats, then we're going to throw
 	// 10K random events at it, 10% of which will match the pattern
-	rand.Seed(2325)
+	rand.New(rand.NewSource(2325))
 	pattern := `{"x": [`
 	var targets []string
 	for i := 0; i < 10; i++ {
@@ -28,7 +28,7 @@ func BenchmarkNumberMatching(b *testing.B) {
 	pattern += `]}`
 	cm := newCoreMatcher()
 	flattener := newJSONFlattener()
-	err := cm.addPattern("P", pattern)
+	err := cm.addPattern("P", pattern, BuiltForComfort)
 	if err != nil {
 		b.Error("addP")
 	}
@@ -96,18 +96,16 @@ func TestShowBigSmall(t *testing.T) {
 	lows := []string{"-5_000_000_000.00000", "-4_999_999_999.99999", "-4_999_999_999.99998"}
 	highs := []string{"4_999_999_999.99998", "4_999_999_999.99999", "5_000_000_000.00000"}
 	for _, low := range lows {
-		c, err := qNumFromBytes([]byte(low))
+		_, err := qNumFromBytes([]byte(low))
 		if err != nil {
 			t.Errorf("Problem with %s: %s", low, err.Error())
 		}
-		fmt.Printf("%s <%s>\n", low, c)
 	}
 	for _, high := range highs {
-		c, err := qNumFromBytes([]byte(high))
+		_, err := qNumFromBytes([]byte(high))
 		if err != nil {
 			t.Errorf("Problem with %s: %s", high, err.Error())
 		}
-		fmt.Printf("%s <%s>\n", high, c)
 	}
 }
 
@@ -162,13 +160,13 @@ func TestOrdering(t *testing.T) {
 		f -= 1000000000.0
 		in = append(in, f)
 	}
-	sort.Float64s(in)
+	slices.Sort(in)
 	var out []string
 	for _, f := range in {
 		c := qNumFromFloat(f)
 		out = append(out, string(c))
 	}
-	if !sort.StringsAreSorted(out) {
+	if !slices.IsSorted(out) {
 		t.Errorf("Not sorted")
 	}
 }
@@ -183,11 +181,10 @@ func TestMatcherNumerics(t *testing.T) {
 		if err != nil {
 			t.Error("Parse? " + err.Error())
 		}
-		q, err := qNumFromBytes([]byte(should))
+		_, err = qNumFromBytes([]byte(should))
 		if err != nil {
 			t.Error("QF: " + err.Error())
 		}
-		fmt.Printf("%f <%s>\n", f, q)
 		if f != 35.0 {
 			t.Error("Not 35!")
 		}
@@ -195,7 +192,7 @@ func TestMatcherNumerics(t *testing.T) {
 
 	template := `{"x": NUM}`
 	m := newCoreMatcher()
-	err := m.addPattern("35", p)
+	err := m.addPattern("35", p, BuiltForComfort)
 	if err != nil {
 		t.Error("Oops " + err.Error())
 	}

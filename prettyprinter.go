@@ -13,6 +13,9 @@ type printer interface {
 	labelTable(table *smallTable, label string)
 	printNFA(table *smallTable) string
 	shortPrintNFA(table *smallTable) string
+	tableSerial(t *smallTable) uint
+	// printSerial(table *smallTable) string
+	// printState(state *faState) string
 }
 
 // nullPrinter is what the name says, a do-nothing implementation of the printer interface which ideally
@@ -29,6 +32,10 @@ func (*nullPrinter) printNFA(_ *smallTable) string {
 func (*nullPrinter) shortPrintNFA(_ *smallTable) string {
 	return noPP
 }
+func (*nullPrinter) tableSerial(_ *smallTable) uint { return 0 }
+
+// func (*nullPrinter) printSerial(_ *smallTable) string { return noPP }
+// func (*nullPrinter) printState(_ *faState) string     { return noPP }
 
 var sharedNullPrinter = &nullPrinter{}
 
@@ -58,87 +65,161 @@ func (pp *prettyPrinter) tableLabel(t *smallTable) string {
 
 func (pp *prettyPrinter) labelTable(table *smallTable, label string) {
 	pp.tableLabels[table] = label
-	newSerial := pp.randInts.Int63()%500 + 500
+	newSerial := pp.randInts.Int63()%899 + 100
 	//nolint:gosec
 	pp.tableSerials[table] = uint(newSerial)
 }
 
-func (pp *prettyPrinter) printNFA(t *smallTable) string {
-	return pp.printNFAStep(&faState{table: t}, 0, make(map[*smallTable]bool))
+/*
+func (pp *prettyPrinter) printSerial(table *smallTable) string {
+	label := pp.tableLabels[table]
+	if len(label) == 0 {
+		label = fmt.Sprintf("%p", table)[7:]
+	}
+	return fmt.Sprintf("%d[%s]", pp.tableSerials[table], label)
 }
 
-func (pp *prettyPrinter) printNFAStep(fas *faState, indent int, already map[*smallTable]bool) string {
-	t := fas.table
-	trailer := "\n"
-	if len(fas.fieldTransitions) != 0 {
-		trailer = fmt.Sprintf(" [%d transition(s)]\n", len(fas.fieldTransitions))
-	}
+func (pp *prettyPrinter) printState(state *`faState`) string {
+	return fmt.Sprintf("State @%p table %s", state, pp.printSerial(state.table))
+}
+*/
+
+// This structure is necessitated by the fact that it seems possible that Quamina sometimes
+// generates FAs in which more than one faState has the same smallTable. So to make sure that
+// all the states show up in the prettyprint output, we have to match on both the state and
+// table.
+type ppPair struct {
+	state *faState
+	table *smallTable
+}
+type ppAlready map[ppPair]bool
+
+func newPpAlready() ppAlready {
+	return make(map[ppPair]bool)
+}
+
+func (a ppAlready) sawThis(state *faState, table *smallTable) bool {
+	return a[ppPair{state, table}]
+}
+func (a ppAlready) remember(state *faState, table *smallTable) {
+	a[ppPair{state, table}] = true
+}
+
+func (pp *prettyPrinter) printNFA(t *smallTable) string {
+	// Use the caller's *smallTable pointer for label lookup. Building a
+	// throwaway faState{table: *t} would re-locate the smallTable in memory
+	// and lose the label (labels are keyed by address).
+	return pp.printNFAFromTable(t, newPpAlready())
+}
+
+// printNFAFromTable prints starting from a smallTable, using its address for
+// label lookup. Used for the start node where there's no real *faState owning
+// the requested address.
+func (pp *prettyPrinter) printNFAFromTable(t *smallTable, already ppAlready) string {
+	tableCost := mcSmallTable(t)
+	stateCost := mcFaStateBase + tableCost - mcSmallTableBase
+	trailer := fmt.Sprintf("[s/t %d/%d] \n", tableCost, stateCost)
 	s := " " + pp.printTable(t) + trailer
 	for _, step := range t.steps {
 		if step != nil {
-			for _, state := range step.states {
-				_, ok := already[state.table]
-				if !ok {
-					already[state.table] = true
-					s += pp.printNFAStep(state, indent+1, already)
-				}
-			}
+			s += pp.printNFAStep(step, 1, already)
 		}
+	}
+	for _, step := range t.epsilons {
+		s += pp.printNFAStep(step, 1, already)
 	}
 	return s
 }
+
+func (pp *prettyPrinter) printNFAStep(fas *faState, indent int, already ppAlready) string {
+	t := &fas.table
+	if already.sawThis(fas, t) {
+		return ""
+	}
+	already.remember(fas, t)
+	trailer := ""
+	if len(fas.epsilonClosure) > 0 {
+		trailer += fmt.Sprintf(" [%d in closure]", len(fas.epsilonClosure))
+	}
+	if len(fas.fieldTransitions) != 0 {
+		trailer += fmt.Sprintf(" [%d transition(s)]", len(fas.fieldTransitions))
+	}
+	trailer += fmt.Sprintf("[s/t %d/%d] ", mcSmallTable(&fas.table), mcFaState(fas))
+	trailer += "\n"
+	s := " " + pp.printTable(t) + trailer
+	for _, step := range t.steps {
+		if step != nil {
+			s += pp.printNFAStep(step, indent+1, already)
+		}
+	}
+	for _, step := range t.epsilons {
+		s += pp.printNFAStep(step, indent+1, already)
+	}
+	return s
+}
+func shortTableAddress(p *smallTable) string {
+	long := fmt.Sprintf("%p", p)
+	return long[len(long)-4:]
+}
+
+/*
+func shortStateAddress(p *faState) string {
+	long := fmt.Sprintf("%p", p)
+	return long[len(long)-4:]
+}
+*/
 
 func (pp *prettyPrinter) printTable(t *smallTable) string {
 	// going to build a string rep of a smallTable based on the unpacked form
 	// each line is going to be a range like
 	// 'c' .. 'e' => %X
 	// lines where the *faNext is nil are omitted
-	// TODO: Post-nfa-rationalization, I don't think the whole defTrans thing is necessary any more?
 	var rows []string
 	unpacked := unpackTable(t)
 
 	var rangeStart int
-	var b int
+	var b byte
 
 	defTrans := unpacked[0]
 
-	// TODO: Try to generate an NFA with a state with multiple epsilons
-	if len(t.epsilon) != 0 {
+	if len(t.epsilons) != 0 {
 		fas := ""
-		for i, eps := range t.epsilon {
-			ep := &faNext{states: []*faState{eps}}
+		for i, eps := range t.epsilons {
 			if i != 0 {
 				fas += ", "
 			}
-			fas += pp.nextString(ep)
+			fas += pp.nextString(eps)
 		}
 		rows = append(rows, "ε → "+fas)
 	}
 	for {
-		for b < len(unpacked) && unpacked[b] == nil {
+		for int(b) < len(unpacked) && unpacked[b] == nil {
 			b++
 		}
-		if b == len(unpacked) {
+		if b == byte(len(unpacked)) {
 			break
 		}
-		rangeStart = b
+		rangeStart = int(b)
 		lastN := unpacked[b]
-		for b < len(unpacked) && unpacked[b] == lastN {
+		for int(b) < len(unpacked) && unpacked[b] == lastN {
 			b++
 		}
 		if lastN != defTrans {
 			row := ""
-			if b == rangeStart+1 {
+			if int(b) == rangeStart+1 {
 				row += fmt.Sprintf("'%s'", branchChar(byte(rangeStart)))
 			} else {
-				row += fmt.Sprintf("'%s'…'%s'", branchChar(byte(rangeStart)), branchChar(byte(b-1)))
+				row += fmt.Sprintf("'%s'…'%s'", branchChar(byte(rangeStart)), branchChar(b-1))
 			}
-			row += " → " + pp.nextString(lastN)
+			row += " → " + "(" + pp.nextString(lastN)
 			rows = append(rows, row)
 		}
 	}
 	serial := pp.tableSerial(t)
 	label := pp.tableLabel(t)
+	if len(label) == 0 {
+		label = shortTableAddress(t)
+	}
 	if defTrans != nil {
 		dtString := "★ → " + pp.nextString(defTrans)
 		return fmt.Sprintf("%d[%s] ", serial, label) + strings.Join(rows, " / ") + " / " + dtString
@@ -147,22 +228,36 @@ func (pp *prettyPrinter) printTable(t *smallTable) string {
 	}
 }
 
-func (pp *prettyPrinter) nextString(n *faNext) string {
-	var snames []string
-	for _, step := range n.states {
-		snames = append(snames, fmt.Sprintf("%d[%s]",
-			pp.tableSerial(step.table), pp.tableLabel(step.table)))
+func (pp *prettyPrinter) nextString(n *faState) string {
+	label := pp.tableLabel(&n.table)
+	if len(label) == 0 {
+		label = shortTableAddress(&n.table)
 	}
-	return strings.Join(snames, " · ")
+	return fmt.Sprintf("%d[%s]", pp.tableSerial(&n.table), label)
 }
 
 func branchChar(b byte) string {
+	replaceStr := []string{
+		"nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel", "bs", "ht", "nl", "vt", "np", "cr", "so", "si", "dle",
+		"dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb", "can", "em", "sub", "esc", "fs", "gs", "rs", "us", "sp",
+		"!", "\"", "#", "$", "%", "&", "'", "(", ")", "*", "+", ",", "-", ".", "/",
+		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+		":", ";", "<", "=", ">", "?", "@",
+		"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R",
+		"S", "T", "U", "V", "W", "X", "Y", "Z",
+		"[", "\\", "]", "^", "_", "`",
+		"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+		"s", "t", "u", "v", "w", "x", "y", "z",
+		"{", "|", "}", "~", "del"}
 	switch b {
-	// TODO: Figure out how to test commented-out cases
 	case valueTerminator:
-		return "ℵ"
+		return fmt.Sprintf("%x/ℵ", valueTerminator)
 	default:
-		return fmt.Sprintf("%c", b)
+		if b < 128 {
+			return fmt.Sprintf("%x/%s", b, replaceStr[b])
+		} else {
+			return fmt.Sprintf("%x/", b)
+		}
 	}
 }
 

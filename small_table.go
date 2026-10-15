@@ -19,84 +19,81 @@ const valueTerminator byte = 0xf5
 // but I imagine organizing it this way is a bit more memory-efficient.  Suppose we want to model a table where
 // byte values 3 and 4 map to ss1 and byte 0x34 maps to ss2.  Then the smallTable would look like:
 //
-//	ceilings:--|3|----|5|-|0x34|--|x35|-|byteCeiling|
-//	states:---|nil|-|&ss1|--|nil|-|&ss2|---------|nil|
+//	ceilings:-|  3|-|   5|-|0x34|-| x35|-|byteCeiling|
+//	states:---|nil|-|&ss1|-| nil|-|&ss2|-|        nil|
 //	invariant: The last element of ceilings is always byteCeiling
 //
 // The motivation is that we want to build a state machine on byte values to implement things like prefixes and
 // ranges of bytes.  This could be done simply with an array of size byteCeiling for each state in the machine,
 // or a map[byte]S, but both would be size-inefficient, particularly in the case where you're implementing
-// ranges.  Now, the step function is O(N) in the number of entries, but empirically, the number of entries is
-// small even in large automata, so skipping throgh the ceilings list is measurably about the same speed as a map
+// ranges.  Now, the step function is O(N) in the number of entries, but empirically, the average number of entries is
+// small even in large automata, so skipping through the ceilings list is measurably about the same speed as a map
 // or array construct. One could imagine making step() smarter and do a binary search in the case where there are
 // more than some number of entries. But I'm dubious, the ceilings field is []byte and running through a single-digit
 // number of those has a good chance of minimizing memory fetches.
 // Since this is used to support nondeterministic finite automata (NFAs), it is possible for a state
 // to have epsilon transitions, i.e. a transition that is always taken whatever the next input symbol is.
+// NFAs in theory can branch to two or more other states on a single input symbol, but that can always be
+// handled with epsilons. For example, if the symbol 'b' should branch to both s1 and s2, that can be handled
+// by branching on 'b' to a state that has no byte transitions but two epsilons, one each for s1 and s2.
+
 type smallTable struct {
 	ceilings []byte
-	steps    []*faNext
-	epsilon  []*faState
+	steps    []*faState
+	epsilons []*faState
 }
 
 // newSmallTable mostly exists to enforce the constraint that every smallTable has a byteCeiling entry at
 // the end, which smallTable.step totally depends on.
-func newSmallTable() *smallTable {
-	return &smallTable{
+func newSmallTable() smallTable {
+	return smallTable{
 		ceilings: []byte{byte(byteCeiling)},
-		steps:    []*faNext{nil},
+		steps:    []*faState{nil},
 	}
 }
 
-type stepOut struct {
-	steps   []*faState
-	epsilon []*faState
+func (t *smallTable) isEpsilonOnly() bool {
+	return len(t.epsilons) > 0 && len(t.ceilings) == 1
 }
 
-// step finds the list of states that result from a transition on the utf8Byte argument. The states can come
-// as a result of looking in the table structure, and also the "epsilon" transitions that occur on every
-// input byte.  Since this is the white-hot center of Quamina's runtime CPU, we don't want to be merging
-// the two lists. So to avoid any memory allocation, the caller passes in a structure with the two lists
-// and step fills them in.
-func (t *smallTable) step(utf8Byte byte, out *stepOut) {
-	out.epsilon = t.epsilon
+func (t *smallTable) isJustEpsilons() bool {
+	// TODO I think the second of the three conditions is unnecessary
+	return len(t.steps) == 1 && t.steps[0] == nil && len(t.epsilons) != 0
+}
+
+// step returns the faState that results from a transition on utf8Byte, or nil
+// if the table has no step for that byte. Epsilon transitions are handled
+// separately (via precomputed epsilonClosure), so step never touches t.epsilons.
+// This is the white-hot center of Quamina's runtime CPU; keep it inlinable.
+func (t *smallTable) step(utf8Byte byte) *faState {
 	for index, ceiling := range t.ceilings {
 		if utf8Byte < ceiling {
-			if t.steps[index] == nil {
-				out.steps = nil
-			} else {
-				out.steps = t.steps[index].states
-			}
-			return
+			return t.steps[index]
 		}
+	}
+	// utf8Byte >= byteCeiling (0xF6): only valid if it's a forbidden UTF-8 byte,
+	// in which case we return nil so the caller can drop this path.
+	if isForbiddenUTF8(utf8Byte) {
+		return nil
 	}
 	panic("Malformed smallTable")
 }
 
-// dStep takes a step through an NFA in the case where it is known that the NFA in question
-// is deterministic, i.e. each combination of an faState and a byte value transitions to at
-// most one other byte value.
-func (t *smallTable) dStep(utf8Byte byte) *faState {
-	for index, ceiling := range t.ceilings {
-		if utf8Byte < ceiling {
-			if t.steps[index] == nil {
-				return nil
-			} else {
-				return t.steps[index].states[0]
-			}
-		}
-	}
-	panic("Malformed smallTable")
+// isForbiddenUTF8 reports whether the byte can never appear in valid UTF-8.
+// Range check instead of a map lookup — strictly faster and the forbidden set
+// is three compact ranges: {0xC0, 0xC1} and {0xF5–0xFF}.
+func isForbiddenUTF8(b byte) bool {
+	return b == 0xC0 || b == 0xC1 || b >= 0xF5
 }
 
 // makeSmallTable creates a pre-loaded small table, with all bytes not otherwise specified having the defaultStep
 // value, and then a few other values with their indexes and values specified in the other two arguments. The
 // goal is to reduce memory churn
 // constraint: positions must be provided in order
-func makeSmallTable(defaultStep *faNext, indices []byte, steps []*faNext) *smallTable {
+func makeSmallTable(defaultStep *faState, indices []byte, steps []*faState) smallTable {
 	t := smallTable{
 		ceilings: make([]byte, 0, len(indices)+2),
-		steps:    make([]*faNext, 0, len(indices)+2),
+		steps:    make([]*faState, 0, len(indices)+2),
 	}
 
 	var lastIndex byte = 0
@@ -105,38 +102,64 @@ func makeSmallTable(defaultStep *faNext, indices []byte, steps []*faNext) *small
 			t.ceilings = append(t.ceilings, index)
 			t.steps = append(t.steps, defaultStep)
 		}
-		if index < byte(byteCeiling) {
-			t.ceilings = append(t.ceilings, index+1)
-			t.steps = append(t.steps, steps[i])
-		}
+		t.ceilings = append(t.ceilings, index+1)
+		t.steps = append(t.steps, steps[i])
 		lastIndex = index + 1
 	}
-	if t.ceilings[len(t.ceilings)-1] < byte(byteCeiling) {
+	if indices[len(indices)-1] < byte(byteCeiling) {
 		t.ceilings = append(t.ceilings, byte(byteCeiling))
 		t.steps = append(t.steps, defaultStep)
 	}
-	return &t
+	return t
 }
 
-func (t *smallTable) gatherMetadata(meta *nfaMetadata) {
-	eps := len(t.epsilon)
-	for _, step := range t.steps {
-		if step != nil {
-			if (eps + len(step.states)) > meta.maxOutDegree {
-				meta.maxOutDegree = eps + len(step.states)
-			}
-			for _, state := range step.states {
-				state.table.gatherMetadata(meta)
-			}
-		}
+// For manipulating larger-scale machines, the performance starts to be dominated by
+// the unpack/pack overhead required for addByteStep, specifically by creating lots of
+// garbage-collection work.  stIterator provides a cheap way to cycle through all the
+// legal byte values without unpacking the smallTable.
+type stIterator struct {
+	table        *smallTable
+	ceilingIndex int
+	byteIndex    byte
+}
+
+func newSTIterator(t *smallTable, iter *stIterator) stIterator {
+	// make new iterator
+	if iter == nil {
+		return stIterator{table: t, byteIndex: 0, ceilingIndex: 0}
 	}
+
+	// reuse existing iterator
+	iter.table = t
+	iter.byteIndex = 0
+	iter.ceilingIndex = 0
+	return *iter
+}
+func (si *stIterator) hasNext() bool {
+	return si.byteIndex < byte(byteCeiling)
+}
+func (si *stIterator) next() (byte, *faState) {
+	utf8byte := byte(si.byteIndex)
+	si.byteIndex++
+	if utf8byte == si.table.ceilings[si.ceilingIndex] {
+		si.ceilingIndex++
+	}
+	return utf8byte, si.table.steps[si.ceilingIndex]
+}
+func (si *stIterator) nextState() *faState {
+	utf8byte := byte(si.byteIndex)
+	si.byteIndex++
+	if utf8byte == si.table.ceilings[si.ceilingIndex] {
+		si.ceilingIndex++
+	}
+	return si.table.steps[si.ceilingIndex]
 }
 
 // unpackedTable replicates the data in the smallTable ceilings and states arrays.  It's quite hard to
 // update the list structure in a smallTable, but trivial in an unpackedTable.  The idea is that to update
 // a smallTable you unpack it, update, then re-pack it.  Not gonna be the most efficient thing so at some future point…
 // TODO: Figure out how to update a smallTable in place
-type unpackedTable [byteCeiling]*faNext
+type unpackedTable [byteCeiling]*faState
 
 func unpackTable(t *smallTable) *unpackedTable {
 	var u unpackedTable
@@ -153,7 +176,7 @@ func unpackTable(t *smallTable) *unpackedTable {
 
 func (t *smallTable) pack(u *unpackedTable) {
 	ceilings := make([]byte, 0, 16)
-	steps := make([]*faNext, 0, 16)
+	steps := make([]*faState, 0, 16)
 	lastStep := u[0]
 	for unpackedIndex, ss := range u {
 		if ss != lastStep {
@@ -168,8 +191,23 @@ func (t *smallTable) pack(u *unpackedTable) {
 	t.steps = steps
 }
 
-func (t *smallTable) addByteStep(utf8Byte byte, step *faNext) {
+func (t *smallTable) addByteStep(utf8Byte byte, step *faState) {
 	unpacked := unpackTable(t)
 	unpacked[utf8Byte] = step
 	t.pack(unpacked)
+}
+
+// not all regexp FAs are nondeterministic. This could have been detected at
+// FA-building time, but doing so and then sending the status over to the valueMatcher
+// turned out to be complex, as opposed to the following, which is not only simple but fast.
+func (t *smallTable) isNondeterministic() bool {
+	if len(t.epsilons) > 0 {
+		return true
+	}
+	for _, step := range t.steps {
+		if step != nil && step.table.isNondeterministic() {
+			return true
+		}
+	}
+	return false
 }

@@ -1,15 +1,13 @@
 package quamina
 
 import (
-	"bytes"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 )
 
 func TestFAMergePerf(t *testing.T) {
-	words := readWWords(t)
+	words := readWWords(t, 10)
 	patterns := make([]string, 0, len(words))
 	for _, word := range words {
 		pattern := fmt.Sprintf(`{"x": [ "%s" ] }`, string(word))
@@ -45,16 +43,15 @@ func TestUnpack(t *testing.T) {
 		table:            st1,
 		fieldTransitions: nil,
 	}
-	nextStep := faNext{states: []*faState{&nextState}}
 
 	st := smallTable{
 		ceilings: []uint8{2, 3, byte(byteCeiling)},
-		steps:    []*faNext{nil, &nextStep, nil},
+		steps:    []*faState{nil, &nextState, nil},
 	}
 	u := unpackTable(&st)
 	for i := range u {
 		if i == 2 {
-			if u[i] != &nextStep {
+			if u[i] != &nextState {
 				t.Error("Not in pos 2")
 			}
 		} else {
@@ -65,59 +62,72 @@ func TestUnpack(t *testing.T) {
 	}
 }
 
-func unravelSmallTable(buf *bytes.Buffer, table *smallTable, depth int, showMemoryAddress bool, visited map[interface{}]bool) {
-	if visited[table] {
-		buf.WriteString(fmt.Sprintf("%s(already visited)\n", strings.Repeat("  ", depth)))
-		return
+func TestDodgeBadUTF8(t *testing.T) {
+	st := makeSmallTable(nil, []byte{'a'}, []*faState{{}})
+	if got := st.step(0xFE); got != nil {
+		t.Errorf("step(0xFE) = %v, want nil", got)
 	}
-	visited[table] = true
-
-	if table == nil {
-		buf.WriteString(fmt.Sprintf("%s<nil>\n", strings.Repeat("  ", depth)))
-		return
-	}
-
-	indent := strings.Repeat("  ", depth)
-	if showMemoryAddress {
-		buf.WriteString(fmt.Sprintf("%ssmallTable: %p\n", indent, table))
-	} else {
-		buf.WriteString(fmt.Sprintf("%ssmallTable:\n", indent))
-	}
-	buf.WriteString(fmt.Sprintf("%s  ceilings: %s\n", indent, formatCeilings(table.ceilings)))
-	buf.WriteString(fmt.Sprintf("%s  steps:\n", indent))
-	for i, step := range table.steps {
-		if step != nil {
-			if showMemoryAddress {
-				buf.WriteString(fmt.Sprintf("%s    %d: %p\n", indent, i, step))
-			} else {
-				buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
-			}
-			unravelFaNext(buf, step, depth+3, showMemoryAddress, visited)
-		} else {
-			buf.WriteString(fmt.Sprintf("%s    %d: <nil>\n", indent, i))
-		}
-	}
-	buf.WriteString(fmt.Sprintf("%s  epsilon:\n", indent))
-	for i, state := range table.epsilon {
-		if showMemoryAddress {
-			buf.WriteString(fmt.Sprintf("%s    %d: %p\n", indent, i, state))
-		} else {
-			buf.WriteString(fmt.Sprintf("%s    %d:\n", indent, i))
-		}
-		unravelFaState(buf, state, depth+3, showMemoryAddress, visited)
+	if got := st.step(0xFE); got != nil {
+		t.Errorf("dStep(0xFE) = %v, want nil", got)
 	}
 }
 
-func formatCeilings(ceilings []byte) string {
-	var formatted []string
-	for i, ceiling := range ceilings {
-		if i == len(ceilings)-1 && ceiling == byte(byteCeiling) {
-			formatted = append(formatted, fmt.Sprintf("byteCeiling(0x%02X)", ceiling))
-		} else if ceiling >= 32 && ceiling <= 126 {
-			formatted = append(formatted, fmt.Sprintf("'%c'", ceiling))
-		} else {
-			formatted = append(formatted, fmt.Sprintf("0x%02X", ceiling))
+func TestSmallTableIterator(t *testing.T) {
+	bytevals := []byte{11, 22, 'a', 'b', 'c', 'z', 0xf3}
+	var s1, s2, s3, s4, s5, s6, s7 faState
+	var steps = []*faState{&s1, &s2, &s3, &s4, &s5, &s6, &s7}
+	st := makeSmallTable(nil, bytevals, steps)
+	wanted := make([]*faState, byteCeiling)
+	for i, byteval := range bytevals {
+		wanted[byteval] = steps[i]
+	}
+	iter := newSTIterator(&st, nil)
+	for iter.hasNext() {
+		utf8byte, step := iter.next()
+		if wanted[utf8byte] != step {
+			t.Errorf("at u=%x wanted %p got %p", utf8byte, wanted[utf8byte], step)
 		}
 	}
-	return "[" + strings.Join(formatted, ", ") + "]"
+	iter.byteIndex = 0
+	iter.ceilingIndex = 0
+	for i := 0; i < byteCeiling; i++ {
+		state := iter.nextState()
+		if wanted[i] != state {
+			t.Errorf("at u=%x wanted %p got %p", i, wanted[i], state)
+		}
+	}
+	unpacked := unpackTable(&st)
+	iter = newSTIterator(&st, &iter)
+	for iter.hasNext() {
+		utf8byte, step := iter.next()
+		if unpacked[utf8byte] != step {
+			t.Errorf("Wrong unpacked at %x", utf8byte)
+		}
+	}
+
+	//	ceilings:-|  3|-|   5|-|0x34|-| x35|-|byteCeiling|
+	//	states:---|nil|-|&ss1|-| nil|-|&ss2|-|        nil|
+	bytevals = []byte{3, 5, 0x34, 0x35}
+	var ss1, ss2 faState
+	steps = []*faState{nil, &ss1, nil, &ss2}
+	st = makeSmallTable(nil, bytevals, steps)
+	wanted = make([]*faState, byteCeiling)
+	for i, byteval := range bytevals {
+		wanted[byteval] = steps[i]
+	}
+	iter = newSTIterator(&st, &iter)
+	for iter.hasNext() {
+		utf8byte, step := iter.next()
+		if wanted[utf8byte] != step {
+			t.Errorf("at u=%x wanted %p got %p", utf8byte, wanted[utf8byte], step)
+		}
+	}
+	unpacked = unpackTable(&st)
+	iter = newSTIterator(&st, &iter)
+	for iter.hasNext() {
+		utf8byte, step := iter.next()
+		if unpacked[utf8byte] != step {
+			t.Errorf("Wrong unpacked at %x", utf8byte)
+		}
+	}
 }

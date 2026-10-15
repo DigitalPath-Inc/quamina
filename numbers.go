@@ -2,7 +2,6 @@ package quamina
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 )
 
@@ -36,11 +35,21 @@ func qNumFromBytes(bytes []byte) (qNumber, error) {
 	return qNumFromFloat(numeric), nil
 }
 
-// qNumFromFLoat is here mostly to support testing
+// qNumFromFloat is here mostly to support testing
 func qNumFromFloat(f float64) qNumber {
 	return numbitsFromFloat64(f).toQNumber()
 }
 
+// qNumFromBytesBuf is like qNumFromBytes but writes to the provided buffer to avoid allocation.
+func qNumFromBytesBuf(bytes []byte, buf *[MaxBytesInEncoding]byte) (qNumber, error) {
+	numeric, err := strconv.ParseFloat(string(bytes), 64)
+	if err != nil {
+		return nil, errors.New("not a float")
+	}
+	return numbitsFromFloat64(numeric).toQNumberBuf(buf), nil
+}
+
+/*
 // for debugging
 func (q qNumber) String() string {
 	ret := ""
@@ -52,3 +61,4 @@ func (q qNumber) String() string {
 	}
 	return ret
 }
+*/

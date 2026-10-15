@@ -16,8 +16,45 @@ func logf(format string, args ...interface{}) {
 	log.Printf(format, args...)
 }
 
-func (m *prunerMatcher) printStats() {
-	logf("%#v", m.getStats())
+func (pm *prunerMatcher) printStats() {
+	logf("%s", pm.stats.String())
+}
+
+func TestPrunerBuildMode(t *testing.T) {
+	entries := []memStateEntry{
+		{1, `{"x": [{"wildcard": "t*ortilla"}]}`, BuiltForComfort},
+		{2, `{"x": [{"wildcard": "tortilla*"}]}`, BuiltForSpeed},
+		{3, `{"x": [{"wildcard": "*tortilla"}]}`, BuiltForComfort},
+		{4, `{"x": [{"wildcard": "tortil*la"}]}`, BuiltForSpeed},
+	}
+	q, err := New(WithPatternDeletion(true))
+	if err != nil {
+		t.Error(err)
+	}
+	for _, entry := range entries {
+		err = q.SetMatcherBuildMode(entry.builderMode)
+		if err != nil {
+			t.Error(err)
+		}
+		err = q.AddPattern(entry.x, entry.pattern)
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	bytes1 := int(q.GetMatcherStats()["bytes"])
+	pr, ok := q.matcher.(*prunerMatcher)
+	if !ok {
+		t.Error("Not pruner")
+	}
+	// trigger := pr.rebuildTrigger
+	err = pr.rebuildWhileLocked(true)
+	if err != nil {
+		t.Error(err)
+	}
+	bytes2 := int(q.GetMatcherStats()["bytes"])
+	if bytes1 != bytes2 {
+		t.Errorf("b1 %d, b2 %d", bytes1, bytes2)
+	}
 }
 
 func TestBasic(t *testing.T) {
@@ -29,12 +66,12 @@ func TestBasic(t *testing.T) {
 		m = newPrunerMatcher(nil)
 	)
 
-	if err := m.addPattern(id, pat); err != nil {
+	if err := m.addPattern(id, pat, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 
 	// It's okay to update a pattern.
-	if err := m.addPattern(id, pat); err != nil {
+	if err := m.addPattern(id, pat, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,7 +130,7 @@ func TestRebuildSome(t *testing.T) {
 	populate := func() {
 		for i := 0; i < n; i++ {
 			p := fmt.Sprintf(`{"like":["tacos","queso"],"want":[%d]}`, i)
-			if err := m.addPattern(i, p); err != nil {
+			if err := m.addPattern(i, p, BuiltForComfort); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -123,13 +160,14 @@ func TestRebuildSome(t *testing.T) {
 
 	queryFast := func(verify bool) {
 		f := newJSONFlattener()
+		bufs := newNfaBuffers()
 		for i := 0; i < n; i++ {
 			e := fmt.Sprintf(`{"like":"tacos","want":%d}`, i)
 			fs, err := f.Flatten([]byte(e), m.getSegmentsTreeTracker())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, err := m.matchesForFields(fs); err != nil {
+			if got, err := m.matchesForFields(fs, bufs); err != nil {
 				t.Fatal(err)
 			} else if verify && len(got) != 1 {
 				t.Fatal(got)
@@ -145,8 +183,8 @@ func TestRebuildSome(t *testing.T) {
 		depopulate()
 		query(false)
 		m.printStats()
-		if s := m.getStats(); s.RebuildDuration == 0 {
-			t.Fatal(s)
+		if s := m.getPrunerStats(); s.RebuildDuration.get().Nanoseconds() == 0 {
+			t.Fatal(s.String())
 		}
 	})
 
@@ -158,8 +196,8 @@ func TestRebuildSome(t *testing.T) {
 		query(true)
 		depopulate()
 		query(false)
-		if s := m.getStats(); s.RebuildDuration != 0 {
-			t.Fatal(s)
+		if s := m.getPrunerStats(); s.RebuildDuration.get().Nanoseconds() != 0 {
+			t.Fatal(s.String())
 		}
 	})
 
@@ -169,8 +207,8 @@ func TestRebuildSome(t *testing.T) {
 		queryFast(false)
 		depopulate()
 		queryFast(false)
-		if s := m.getStats(); s.RebuildDuration == 0 {
-			t.Fatal(s)
+		if s := m.getPrunerStats(); s.RebuildDuration.get().Nanoseconds() == 0 {
+			t.Fatal(s.String())
 		}
 	})
 }
@@ -178,10 +216,11 @@ func TestRebuildSome(t *testing.T) {
 func TestTriggerTooManyFilteredDenom(t *testing.T) {
 	// Verify that a zero denominator doesn't cause problems.
 	m := newPrunerMatcher(nil)
-	trigger := m.rebuildTrigger.(*tooMuchFiltering)
+	pmFields := m.loadFields()
+	trigger := pmFields.rebuildTrigger.(*tooMuchFiltering)
 	trigger.MinAction = 0
 
-	if err := m.addPattern(1, `{"likes":["tacos"]}`); err != nil {
+	if err := m.addPattern(1, `{"likes":["tacos"]}`, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.deletePatterns(1); err != nil {
@@ -197,11 +236,12 @@ func TestTriggerRebuild(t *testing.T) {
 	// This test just checks that a rebuildWhileLocked was actually triggered.
 
 	var (
-		then    = time.Now()
-		m       = newPrunerMatcher(nil)
-		trigger = m.rebuildTrigger.(*tooMuchFiltering)
-		n       = 10
-		doomed  = func(id int) bool {
+		then     = time.Now()
+		m        = newPrunerMatcher(nil)
+		pmFields = m.loadFields()
+		trigger  = pmFields.rebuildTrigger.(*tooMuchFiltering)
+		n        = int64(10)
+		doomed   = func(id int) bool {
 			return id%2 == 0
 		}
 		// printState = func() {
@@ -215,9 +255,9 @@ func TestTriggerRebuild(t *testing.T) {
 	trigger.MinAction = 5
 	trigger.FilteredToEmitted = 0.5
 
-	for i := 0; i < n; i++ {
+	for i := 0; i < int(n); i++ {
 		pat := fmt.Sprintf(`{"n":[%d]}`, i)
-		if err := m.addPattern(i, pat); err != nil {
+		if err := m.addPattern(i, pat, BuiltForComfort); err != nil {
 			t.Fatal(err)
 		}
 
@@ -231,7 +271,7 @@ func TestTriggerRebuild(t *testing.T) {
 	// printState()
 	m.printStats()
 
-	for i := 0; i < n; i++ {
+	for i := 0; i < int(n); i++ {
 		event := fmt.Sprintf(`{"n":%d}`, i)
 		got, err := m.MatchesForJSONEvent([]byte(event))
 		if err != nil {
@@ -251,21 +291,21 @@ func TestTriggerRebuild(t *testing.T) {
 	// printState()
 	m.printStats()
 
-	s := m.getStats()
-	if n <= s.Live {
-		t.Fatal(s.Live)
+	s := m.getPrunerStats()
+	if n <= s.Live.get() {
+		t.Fatal(s.Live.get())
 	}
 
-	if !s.LastRebuilt.After(then) {
-		t.Fatal(s.LastRebuilt)
+	if !s.LastRebuilt.get().After(then) {
+		t.Fatal(s.LastRebuilt.get())
 	}
 
-	if s.RebuildPurged == 0 {
-		t.Fatal(s.RebuildPurged)
+	if s.RebuildPurged.get() == 0 {
+		t.Fatal(s.RebuildPurged.get())
 	}
 
-	if s.RebuildDuration == 0 {
-		t.Fatal(s.RebuildDuration)
+	if s.RebuildDuration.get() == 0 {
+		t.Fatal(s.RebuildDuration.get())
 	}
 }
 
@@ -273,9 +313,12 @@ type badState struct {
 	err error
 }
 
+func (s *badState) SetMatcherBuildMode(mode MatcherBuildMode) {
+}
+
 var errBadState = fmt.Errorf("BadState can't do anything right")
 
-func (s *badState) Add(x X, pattern string) error {
+func (s *badState) Add(x X, pattern string, buildMode MatcherBuildMode) error {
 	return s.err
 }
 
@@ -283,11 +326,11 @@ func (s *badState) Contains(x X) (bool, error) {
 	return false, s.err
 }
 
-func (s *badState) Delete(x X) (int, error) {
-	return 0, s.err
+func (s *badState) Delete(x X) (int32, error) {
+	return int32(0), s.err
 }
 
-func (s *badState) Iterate(f func(x X, pattern string) error) error {
+func (s *badState) Iterate(f func(x X, pattern string, buildMode MatcherBuildMode) error) error {
 	return s.err
 }
 
@@ -297,7 +340,7 @@ func TestBadState(t *testing.T) {
 	}
 	m := newPrunerMatcher(bad)
 
-	if err := m.addPattern(1, `{"likes":["queso"]}`); err == nil {
+	if err := m.addPattern(1, `{"likes":["queso"]}`, BuiltForComfort); err == nil {
 		t.Fatal("expected error")
 	}
 	if err := m.deletePatterns(1); err == nil {
@@ -308,7 +351,7 @@ func TestBadState(t *testing.T) {
 	}
 
 	bad.err = nil
-	if err := m.addPattern(1, `{"likes":["queso"]}`); err != nil {
+	if err := m.addPattern(1, `{"likes":["queso"]}`, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 	bad.err = errBadState
@@ -321,7 +364,7 @@ func TestBadState(t *testing.T) {
 func TestBadPattern(t *testing.T) {
 	m := newPrunerMatcher(&badState{})
 
-	if err := m.addPattern(1, `Dream baby dream`); err == nil {
+	if err := m.addPattern(1, `Dream baby dream`, BuiltForComfort); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -337,7 +380,9 @@ func TestBadEvent(t *testing.T) {
 
 func TestUnsetRebuildTrigger(t *testing.T) {
 	m := newPrunerMatcher(&badState{})
-	m.rebuildTrigger = nil
+	pmFields := m.loadFields()
+	pmFields.rebuildTrigger = nil
+	m.storeFields(pmFields)
 	if err := m.maybeRebuild(false); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +394,7 @@ func TestFlattener(t *testing.T) {
 		f = newJSONFlattener() // Variation for test coverage.
 	)
 
-	if err := m.addPattern(1, `{"wants":["queso"]}`); err != nil {
+	if err := m.addPattern(1, `{"wants":["queso"]}`, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 
@@ -357,7 +402,7 @@ func TestFlattener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := m.matchesForFields(fs)
+	got, err := m.matchesForFields(fs, newNfaBuffers())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,11 +420,11 @@ func TestMultiplePatternsWithSameId(t *testing.T) {
 		id interface{} = 1
 	)
 
-	if err := m.addPattern(id, `{"enjoys":["queso"]}`); err != nil {
+	if err := m.addPattern(id, `{"enjoys":["queso"]}`, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := m.addPattern(id, `{"needs":["chips"]}`); err != nil {
+	if err := m.addPattern(id, `{"needs":["chips"]}`, BuiltForComfort); err != nil {
 		t.Fatal(err)
 	}
 
@@ -412,24 +457,24 @@ func TestMultiplePatternsWithSameId(t *testing.T) {
 
 	check()
 
-	s := m.getStats()
+	s := m.getPrunerStats()
 
-	if s.Live != 2 {
-		t.Fatal(s.Live)
+	if s.Live.get() != 2 {
+		t.Fatal(s.Live.get())
 	}
 
 	if err := m.deletePatterns(id); err != nil {
 		t.Fatal(err)
 	}
 
-	s = m.getStats()
+	s = m.getPrunerStats()
 
-	if s.Live != 0 {
-		t.Fatal(s.Live)
+	if s.Live.get() != 0 {
+		t.Fatal(s.Live.get())
 	}
 
-	if s.Deleted != 2 {
-		t.Fatal(s.Deleted)
+	if s.Deleted.get() != 2 {
+		t.Fatal(s.Deleted.get())
 	}
 }
 

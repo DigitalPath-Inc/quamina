@@ -16,7 +16,7 @@ jobs:
     name: Unit Tests
     strategy:
       matrix:
-        go-version: ["1.19"]
+        go-version: ["1.23"]
         platform: ["ubuntu-latest"]
         type: ["Tests","Cover"] # run coverage as separate job w/out -race to avoid killing process
         include:
@@ -27,35 +27,24 @@ jobs:
             coveropts: "-coverprofile=coverage.txt -covermode=atomic"
 
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 20
+    timeout-minutes: 20 
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go ${{ matrix.go-version }}
-        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
         id: go
-
-      - name: Restore Go cache
-        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-
-          key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum', 'testdata/**') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ matrix.go-version }}-
 
       - name: Install tparse
         run: go install github.com/mfridman/tparse@latest
 
       - name: Check for .codecov.yaml
         id: codecov-enabled
-        uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6
+        uses: andstor/file-existence-action@558493d6c74bf472d87c84eab196434afc2fa029
         with:
           files: .codecov.yaml
 
@@ -67,9 +56,9 @@ jobs:
 
       - if: steps.codecov-enabled.outputs.files_exists == 'true'
         name: Upload Codecov Report
-        uses: codecov/codecov-action@e28ff129e5465c2c0dcc6f003fc735cb6ae0c673
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Verify git clean
         shell: bash

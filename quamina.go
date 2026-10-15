@@ -10,10 +10,11 @@ import (
 // Quamina instance concurrently in multiple goroutines, create copies using the Copy API.
 type Quamina struct {
 	flattener          Flattener
+	bufs               *nfaBuffers
 	matcher            matcher
 	mediaTypeSpecified bool
 	deletionSpecified  bool
-	patterns           map[X]string
+	buildMode          MatcherBuildMode
 }
 
 // Option is an interface type used in Quamina's New API to pass in options. By convention, Option names
@@ -91,19 +92,7 @@ func WithPatternStorage(ps LivePatternsState) Option {
 	}
 }
 
-// WithPatterns provides a map of patterns to be added to the Quamina instance upon creation.
-// This option allows for bulk pattern addition during initialization.
-func WithPatterns(patterns map[X]string) Option {
-	return func(q *Quamina) error {
-		if q.patterns != nil {
-			return errors.New("patterns already specified")
-		}
-		q.patterns = patterns
-		return nil
-	}
-}
-
-// New returns a new Quamina instance. Consult the APIs beginning with "With" for the options
+// New returns a new Quamina instance. Consult the APIs beginning with “With” for the options
 // that may be used to configure the new instance.
 func New(opts ...Option) (*Quamina, error) {
 	var q Quamina
@@ -115,15 +104,11 @@ func New(opts ...Option) (*Quamina, error) {
 	if (!q.mediaTypeSpecified) && (q.flattener == nil) {
 		q.flattener = newJSONFlattener()
 	}
-	if q.patterns != nil {
-		var err error
-		q.matcher, err = MatcherFromPatterns(q.patterns)
-		if err != nil {
-			return nil, err
-		}
-	} else if !q.deletionSpecified {
+	if !q.deletionSpecified {
 		q.matcher = newCoreMatcher()
 	}
+	q.bufs = newNfaBuffers()
+	q.buildMode = BuiltForComfort
 	return &q, nil
 }
 
@@ -131,7 +116,7 @@ func New(opts ...Option) (*Quamina, error) {
 // goroutines.  Copy'ed instances share the same underlying data structures, so a pattern added to any instance
 // with AddPattern will be visible in all of them.
 func (q *Quamina) Copy() *Quamina {
-	return &Quamina{matcher: q.matcher, flattener: q.flattener.Copy()}
+	return &Quamina{matcher: q.matcher, flattener: q.flattener.Copy(), bufs: newNfaBuffers()}
 }
 
 // X is used in the AddPattern and MatchesForEvent APIs to identify the patterns that are added to
@@ -145,7 +130,36 @@ type X any
 // from multiple goroutines (in instances created using the Copy method) calls will block until any other
 // AddPattern call in progress succeeds.
 func (q *Quamina) AddPattern(x X, patternJSON string) error {
-	return q.matcher.addPattern(x, patternJSON)
+	return q.matcher.addPattern(x, patternJSON, q.buildMode)
+}
+
+// Pattern pairs a Pattern's identifier with its JSON text, for use with AddPatterns.
+type Pattern struct {
+	X    X
+	JSON string
+}
+
+// AddPatterns adds a batch of Patterns, with the same matching results as calling AddPattern on each of them.
+// When the Quamina instance has no Patterns yet, the whole batch is compiled together: Patterns that share
+// field values share automaton states, identical sub-automata are built once, and a Pattern's size grows with
+// the total number of values in it rather than the product of the number of values in each field. This is
+// much faster and smaller for large sets of Patterns, especially ones with many values per field.
+// Because the resulting automaton shares structure, an instance built this way compiles every later
+// AddPattern or AddPatterns call the same way, rebuilding only the parts of the automaton those Patterns
+// touch; adding Patterns in large batches is much cheaper than adding them one at a time.
+// When compiled as a batch, if any Pattern is invalid, an error is returned and none of the batch is added.
+// Instances that already hold Patterns added with AddPattern, and instances created with
+// WithPatternDeletion, add the batch one Pattern at a time.
+func (q *Quamina) AddPatterns(patterns []Pattern) error {
+	if cm, ok := q.matcher.(*coreMatcher); ok {
+		return cm.addPatterns(patterns, q.buildMode)
+	}
+	for _, p := range patterns {
+		if err := q.matcher.addPattern(p.X, p.JSON, q.buildMode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeletePatterns removes patterns identified by the x argument from the Quamina instance; the effect
@@ -155,7 +169,7 @@ func (q *Quamina) DeletePatterns(x X) error {
 }
 
 // MatchesForEvent returns a slice of X values which identify patterns that have previously been added to this
-// Quamina instance and which "match" the event in the sense described in README. The matches slice may be empty
+// Quamina instance and which “match” the event in the sense described in README. The matches slice may be empty
 // if no patterns match. error can be returned in case that the event is not a valid JSON object or contains
 // invalid UTF-8 byte sequences.
 func (q *Quamina) MatchesForEvent(event []byte) ([]X, error) {
@@ -163,5 +177,63 @@ func (q *Quamina) MatchesForEvent(event []byte) ([]X, error) {
 	if err != nil {
 		return nil, err
 	}
-	return q.matcher.matchesForFields(fields)
+	return q.matcher.matchesForFields(fields, q.bufs)
+}
+
+// GetMatcherStats retrieves resource consumption data from a Quamina instance; its results depend only
+// on the AddPattern() calls that have been made previously. It runs in read-only mode without mutex
+// locking, so it should not be run in parallel with AddPattern() calls.
+// It returns a map to allow for the addition of consumption metrics in future. At the moment, the
+// only useful key is "bytes" and the corresponding value is the number of bytes consumed by the Quamina
+// matcher's data structures. The growth in this value correlates reasonably well with the slowdown
+// in AddPattern() and MatchesForEvent() performance in the case when the Patterns being added are
+// of the "wildcard" or "regexp" flavors.
+func (q *Quamina) GetMatcherStats() map[string]float64 {
+	stats := q.matcher.getStats()
+	return map[string]float64{
+		"states":    float64(stats.states),
+		"bytes":     float64(stats.bytes),
+		"fanouts":   float64(stats.fanouts),
+		"maxFanout": float64(stats.maxFanout),
+	}
+}
+
+// MatcherBuildMode enumerates the modes a Quamina instance can be in. The default is BuiltForComfort.
+// When a Quamina instance is in BuiltForComfort mode, adding Patterns which include wildcards and regexps
+// result in NFA-based matchers. These are more compact and faster to build, but result in MatchesForEvent
+// performance slowing down as a fairly linear function of the number of such patterns added.
+// When an instance is in BuiltForSpeed mode, the NFAs which implement wildcard and regexp Patterns are converted
+// to DFAs. As a result, the performance of MatchesForEvent is only very weakly related to the number of
+// Patterns added and in practice is much faster.  However, certain combinations of such patterns can result
+// in explosive growth of the size of the Matcher and the AddPattern latency.  This can be as bad as O(2**N)
+// in the number of Patterns. The use of the GetMatcherStats API is advised to investigate the effects of the
+// combination of this setting with an app's typical usage of AddPattern in production.
+type MatcherBuildMode int
+
+const (
+	BuiltForComfort MatcherBuildMode = iota
+	BuiltForSpeed
+)
+
+// SetMatcherBuildMode puts a Quamina instance into the provided mode
+func (q *Quamina) SetMatcherBuildMode(mode MatcherBuildMode) error {
+	q.buildMode = mode
+	return nil
+}
+func (q *Quamina) GetMatcherBuildMode() MatcherBuildMode {
+	return q.buildMode
+}
+
+// deprecated from here down
+
+// SetMemoryBudget used to set an approximate limit on the number of bytes allocated in building matchers for complex
+// patterns. However, it proved difficult to find an implementation that was both deterministic and had
+// acceptable cost. Thus, this method is deprecated.
+func (q *Quamina) SetMemoryBudget(_ uint64) (uint64, error) {
+	return 0, errors.New("the MemoryBudget API is deprecated")
+}
+
+// GetMemoryBudget is deprecated; see the comment on SetMemoryBudget
+func (q *Quamina) GetMemoryBudget() (uint64, uint64) {
+	return 0, 0
 }

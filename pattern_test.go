@@ -1,9 +1,6 @@
 package quamina
 
 import (
-	"encoding/json"
-	"fmt"
-	"math/rand"
 	"testing"
 )
 
@@ -107,20 +104,20 @@ func TestPatternFromJSON(t *testing.T) {
 	}
 	w1 := []*patternField{{path: "x", vals: []typedVal{{vType: numberType, val: "2"}}}}
 	w2 := []*patternField{{path: "x", vals: []typedVal{
-		{literalType, "null", nil},
-		{literalType, "true", nil},
-		{literalType, "false", nil},
-		{stringType, `"hopp"`, nil},
-		{numberType, "3.072e-11", nil},
+		{literalType, "null", nil, nil},
+		{literalType, "true", nil, nil},
+		{literalType, "false", nil, nil},
+		{stringType, `"hopp"`, nil, nil},
+		{numberType, "3.072e-11", nil, nil},
 	}}}
 	w3 := []*patternField{
 		{path: "x\na", vals: []typedVal{
-			{numberType, "27", nil},
-			{numberType, "28", nil},
+			{numberType, "27", nil, nil},
+			{numberType, "28", nil, nil},
 		}},
 		{path: "x\nb\nm", vals: []typedVal{
-			{stringType, `"a"`, nil},
-			{stringType, `"b"`, nil},
+			{stringType, `"a"`, nil, nil},
+			{stringType, `"b"`, nil, nil},
 		}},
 	}
 	w4 := []*patternField{
@@ -219,61 +216,4 @@ func TestPatternFromJSON(t *testing.T) {
 			}
 		}
 	}
-}
-
-func generatePatterns(numPatterns int, fieldSizes []int) []string {
-	patterns := make([]string, numPatterns)
-	for i := 0; i < numPatterns; i++ {
-		pattern := make(map[string][]interface{})
-		for j := 0; j < len(fieldSizes); j++ {
-			fieldName := fmt.Sprintf("field_%d", j)
-			// patternType := rand.Intn(3) // Limited to only string, prefix, equals-ignore-case
-			patternType := 0
-			switch patternType {
-			case 0:
-				// Regular string values
-				values := make([]interface{}, fieldSizes[j])
-				for k := 0; k < fieldSizes[j]; k++ {
-					values[k] = generateRandomString(4) // Using 4 as a fixed length for each string
-				}
-				pattern[fieldName] = values
-			case 1:
-				// Prefix pattern
-				pattern[fieldName] = []interface{}{map[string]string{"prefix": generateRandomString(2)}}
-			case 2:
-				// Equals-ignore-case pattern
-				pattern[fieldName] = []interface{}{map[string]string{"equals-ignore-case": generateRandomString(4)}} // Using 4 as a fixed length
-			case 3:
-				// Anything-but pattern
-				pattern[fieldName] = []interface{}{map[string][]string{"anything-but": generateRandomStrings(fieldSizes[j])}}
-			case 4:
-				// Wildcard pattern
-				pattern[fieldName] = []interface{}{map[string]string{"wildcard": fmt.Sprintf("%s*%s", generateRandomString(1), generateRandomString(1))}}
-			case 5:
-				// Exists pattern
-				pattern[fieldName] = []interface{}{map[string]bool{"exists": rand.Intn(2) == 1}}
-			}
-		}
-		patternJSON, _ := json.Marshal(pattern)
-		patterns[i] = string(patternJSON)
-	}
-	return patterns
-}
-
-func generateRandomStrings(count int) []string {
-	strings := make([]string, count)
-	for i := 0; i < count; i++ {
-		// generate random strings of length 4 to 8
-		strings[i] = generateRandomString(2)
-	}
-	return strings
-}
-
-func generateRandomString(length int) string {
-	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, length)
-	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
-	}
-	return string(b)
 }

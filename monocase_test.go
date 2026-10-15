@@ -1,7 +1,6 @@
 package quamina
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -25,13 +24,13 @@ func permuteAndTest(t *testing.T, origS, altsS string) {
 	permutations := permuteCase(t, orig, alts, nil, 0, nil)
 	pp := newPrettyPrinter(98987)
 	fa, fm := makeMonocaseFA(orig, pp)
+
 	for _, p := range permutations {
 		ff := traverseDFA(fa, p, nil)
 		if len(ff) != 1 || ff[0] != fm {
 			t.Error("FfFfAIL")
 		}
 	}
-	fmt.Printf("%s/%s: %s\n", origS, altsS, pp.printNFA(fa))
 }
 func permuteCase(t *testing.T, orig []byte, alts []byte, sofar []byte, index int, permutations [][]byte) [][]byte {
 	t.Helper()
@@ -49,11 +48,11 @@ func permuteCase(t *testing.T, orig []byte, alts []byte, sofar []byte, index int
 func TestSingletonMonocaseMerge(t *testing.T) {
 	cm := newCoreMatcher()
 	var err error
-	err = cm.addPattern("singleton", `{"x": ["singleton"] }`)
+	err = cm.addPattern("singleton", `{"x": ["singleton"] }`, BuiltForComfort)
 	if err != nil {
 		t.Error("add singleton: " + err.Error())
 	}
-	err = cm.addPattern("mono", `{"x": [ {"equals-ignore-case": "foo"}]}`)
+	err = cm.addPattern("mono", `{"x": [ {"equals-ignore-case": "foo"}]}`, BuiltForComfort)
 	if err != nil {
 		t.Error("add mono")
 	}
@@ -74,15 +73,15 @@ func TestEqualsIgnoreCaseMatching(t *testing.T) {
 
 	var err error
 	cm := newCoreMatcher()
-	err = cm.addPattern("r1", rule1)
+	err = cm.addPattern("r1", rule1, BuiltForComfort)
 	if err != nil {
 		t.Error("AddPattern: " + err.Error())
 	}
-	err = cm.addPattern("r2", rule2)
+	err = cm.addPattern("r2", rule2, BuiltForComfort)
 	if err != nil {
 		t.Error("AddPattern: " + err.Error())
 	}
-	err = cm.addPattern("r3", rule3)
+	err = cm.addPattern("r3", rule3, BuiltForComfort)
 	if err != nil {
 		t.Error("AddPattern: " + err.Error())
 	}

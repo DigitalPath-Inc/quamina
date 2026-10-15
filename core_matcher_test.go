@@ -1,7 +1,6 @@
 package quamina
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
 )
@@ -10,7 +9,7 @@ func TestBasicMatching(t *testing.T) {
 	var x X = "testing"
 	pattern := `{"a": [1, 2], "b": [1, "3"]}`
 	m := newCoreMatcher()
-	err := m.addPattern(x, pattern)
+	err := m.addPattern(x, pattern, BuiltForComfort)
 	if err != nil {
 		t.Error(err.Error())
 	}
@@ -61,7 +60,7 @@ func TestExistsFalseOrder(t *testing.T) {
 
 	for i, shouldNot := range shouldNotPatterns {
 		m := newCoreMatcher()
-		err := m.addPattern(fmt.Sprintf("should NOT %d", i), shouldNot)
+		err := m.addPattern(fmt.Sprintf("should NOT %d", i), shouldNot, BuiltForComfort)
 		if err != nil {
 			t.Error("addPattern: " + shouldNot + ": " + err.Error())
 		}
@@ -86,7 +85,7 @@ func TestExistsFalseOrder(t *testing.T) {
 
 	mm := newCoreMatcher()
 	for _, pattern := range shouldNotPatterns {
-		err := mm.addPattern(pattern, pattern)
+		err := mm.addPattern(pattern, pattern, BuiltForComfort)
 		if err != nil {
 			t.Error("AddP: " + err.Error())
 		}
@@ -120,7 +119,7 @@ func TestFieldNameOrdering(t *testing.T) {
 	}
 	m := newCoreMatcher()
 	for _, pattern := range patterns {
-		err := m.addPattern(pattern, pattern)
+		err := m.addPattern(pattern, pattern, BuiltForComfort)
 		if err != nil {
 			t.Error("addPattern: " + err.Error())
 		}
@@ -150,14 +149,14 @@ func TestSuffixBug(t *testing.T) {
 
 	// make sure each works individually
 	m := newCoreMatcher()
-	_ = m.addPattern("p0", patterns[0])
+	_ = m.addPattern("p0", patterns[0], BuiltForComfort)
 	matches, _ := m.matchesForJSONEvent([]byte(j))
 	if len(matches) != 1 || matches[0] != "p0" {
 		t.Error("p0 didn't match")
 	}
 
 	m = newCoreMatcher()
-	_ = m.addPattern("p1", patterns[1])
+	_ = m.addPattern("p1", patterns[1], BuiltForComfort)
 	matches, _ = m.matchesForJSONEvent([]byte(j))
 	if len(matches) != 1 || matches[0] != "p1" {
 		t.Error("p1 didn't match")
@@ -168,7 +167,7 @@ func TestSuffixBug(t *testing.T) {
 	wanted := make(map[X]int)
 	for _, should := range patterns {
 		wanted[should] = 0
-		err = m.addPattern(should, should)
+		err = m.addPattern(should, should, BuiltForComfort)
 		if err != nil {
 			t.Error("add one of many: " + err.Error())
 		}
@@ -208,19 +207,21 @@ func TestExerciseMatching(t *testing.T) {
           }
       }`
 	patternsFromReadme := []string{
-		`{"Image": { "Title": [ { "exists": true } ] } }`,
-		`{"Foo": [ { "exists": false } ] }"`,
 		`{"Image": {"Width": [800]}}`,
 		`{"Image": { "Animated": [ false], "Thumbnail": { "Height": [ 125 ] } } }}, "IDs": [943]}`,
+		`{"Image": { "Title": [ { "exists": true } ] } }`,
 		`{"Image": { "Width": [800], "Title": [ { "exists": true } ], "Animated": [ false ] } }`,
 		`{"Image": { "Width": [800], "IDs": [ { "exists": true } ] } }`,
-		`{"Image": { "Thumbnail": { "Url": [ { "shellstyle": "*9943" } ] } } }`,
-		`{"Image": { "Thumbnail": { "Url": [ { "shellstyle": "https://www.example.com/*" } ] } } }`,
-		`{"Image": { "Thumbnail": { "Url": [ { "shellstyle": "https://www.example.com/*9943" } ] } } }`,
+		`{"Foo": [ { "exists": false } ] }"`,
+		`{"Image": { "Thumbnail": { "Url": [ { "wildcard": "*9943" } ] } } }`,
+		`{"Image": { "Thumbnail": { "Url": [ { "wildcard": "https://www.example.*/*9943" } ] } } }`,
 		`{"Image": { "Title": [ {"anything-but":  ["Pikachu", "Eevee"] } ]  } }`,
-		`{"Image": { "Thumbnail": { "Url": [ { "prefix": "https:" } ] } } }`,
 		`{"Image": { "Thumbnail": { "Url": [ "a", { "prefix": "https:" } ] } } }`,
 		`{"Image": { "Title": [ { "equals-ignore-case": "VIEW FROM 15th FLOOR" } ] } }`,
+		`{"Image": { "Title": [ { "regexp": "View .... [0-9][0-9][rtn][dh] Floor" } ]  } }`,
+		`{"Image": { "Title": [ { "regexp": "(View)?( down)? from 15th (Floor|Storey)" } ]  } }`,
+		`{"Image": { "Thumbnail": { "Url": [ { "regexp": "https://www.example.com/[^0-9/]+/[1-9]+" } ] } } }`,
+		`{"Image": { "Title": [ { "regexp": "[~p{L}~p{Zs}~p{Nd}]*"} ] } }"`,
 	}
 
 	var err error
@@ -235,7 +236,7 @@ func TestExerciseMatching(t *testing.T) {
 
 	for i, should := range patternsFromReadme {
 		m := newCoreMatcher()
-		err = m.addPattern(fmt.Sprintf("should %d", i), should)
+		err = m.addPattern(fmt.Sprintf("should %d", i), should, BuiltForComfort)
 		if err != nil {
 			t.Error("addPattern " + should + ": " + err.Error())
 		}
@@ -256,7 +257,7 @@ func TestExerciseMatching(t *testing.T) {
 	}
 	for i, shouldNot := range shouldNotMatches {
 		m := newCoreMatcher()
-		err = m.addPattern(fmt.Sprintf("should NOT %d", i), shouldNot)
+		err = m.addPattern(fmt.Sprintf("should NOT %d", i), shouldNot, BuiltForComfort)
 		if err != nil {
 			t.Error("addPattern: " + shouldNot + ": " + err.Error())
 		}
@@ -273,12 +274,12 @@ func TestExerciseMatching(t *testing.T) {
 	wanted := make(map[X]int)
 	for _, should := range patternsFromReadme {
 		wanted[should] = 0
-		err = m.addPattern(should, should)
+		err = m.addPattern(should, should, BuiltForComfort)
 		if err != nil {
 			t.Error("add one of many: " + err.Error())
 		}
 	}
-	fmt.Println("MS: " + matcherStats(m))
+	fmt.Println("MS: " + coreMatcherStats(m))
 	matches, err := m.matchesForJSONEvent([]byte(j))
 	if err != nil {
 		t.Error("m4J on all: " + err.Error())
@@ -299,7 +300,7 @@ func TestExerciseMatching(t *testing.T) {
 func TestTacos(t *testing.T) {
 	pat := `{"like":["tacos","queso"],"want":[0]}`
 	m := newCoreMatcher()
-	err := m.addPattern(pat, pat)
+	err := m.addPattern(pat, pat, BuiltForComfort)
 	if err != nil {
 		t.Error("Tacos: " + err.Error())
 	}
@@ -310,7 +311,7 @@ func TestSimpleaddPattern(t *testing.T) {
 	var x X = "testing"
 	pattern := `{"a": [1, 2], "b": [1, "3"]}`
 	m := newCoreMatcher()
-	err := m.addPattern(x, pattern)
+	err := m.addPattern(x, pattern, BuiltForComfort)
 	if err != nil {
 		t.Error(err.Error())
 	}
@@ -325,15 +326,12 @@ func TestSimpleaddPattern(t *testing.T) {
 	}
 }
 
-func unravelMatcher(m *coreMatcher, showMemoryAddress bool) string {
-	var buf bytes.Buffer
-	visited := make(map[interface{}]bool)
-	if showMemoryAddress {
-		buf.WriteString(fmt.Sprintf("m: %p\n", m))
-	} else {
-		buf.WriteString("m:\n")
-	}
-	buf.WriteString("  fields:\n")
-	unravelFieldMatcher(&buf, m.fields().state, 2, showMemoryAddress, visited)
-	return buf.String()
+// a lot of tests add and test patterns through the top-level coreMatcher interfaces,
+// which means the finite automata are hidden deep inside the coreMatcher instance
+// and hard to get at.  This helper routine fetches the value-matcher automaton
+// corresponding to the "path" argument
+func fetchFAForPath(t *testing.T, cm *coreMatcher, path string) *faState {
+	t.Helper()
+	vm := cm.fields().state.fields().transitions[path]
+	return vm.fields().start
 }

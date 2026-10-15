@@ -17,6 +17,17 @@ func TestCopy(t *testing.T) {
 	}
 }
 
+func TestSetBuildModeDisabled(t *testing.T) {
+	q, err := New(WithPatternDeletion(true))
+	if err != nil {
+		t.Error("Can't build for deletion")
+	}
+	err = q.SetMatcherBuildMode(BuiltForSpeed)
+	if err != nil {
+		t.Error("SetMatcherBuildMode not allowed with deletion enabled")
+	}
+}
+
 func TestNewQOptions(t *testing.T) {
 	var q *Quamina
 	var err error
@@ -101,7 +112,7 @@ func TestNewQOptions(t *testing.T) {
 const thresholdPerformance = 1.0
 
 // TestCityLots is the benchmark that was used in most of Quamina's performance tuning.  It's fairly pessimal in
-// that it uses geometry/co-ordintes, which will force the fj flattener to process the big arrays of numbers in
+// that it uses geometry/co-ordinates, which will force the fj flattener to process the big arrays of numbers in
 // each line.  A high proportion of typical Quamina workloads should run faster.
 func TestCityLots(t *testing.T) {
 	patterns := []string{
@@ -135,7 +146,7 @@ func TestCityLots(t *testing.T) {
 		}
 	}
 	results := make(map[X]int)
-	fmt.Println(matcherStats(q.matcher.(*coreMatcher)))
+	fmt.Println(coreMatcherStats(q.matcher.(*coreMatcher)))
 
 	lines := getCityLotsLines(t)
 	before := time.Now()
@@ -178,3 +189,13 @@ func TestCityLots(t *testing.T) {
 		}
 	}
 }
+
+/* For this test to work, you need to force a panic in either AddPattern() for MatchesForEvent()
+func TestRecovery(t *testing.T) {
+	q, _ := New()
+	err := q.AddPattern("x", `{"x":[1]}`)
+	if err == nil {
+		t.Error("Should fail")
+	}
+}
+*/
