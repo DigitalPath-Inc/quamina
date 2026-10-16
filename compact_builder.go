@@ -21,7 +21,7 @@ import (
 //   - cNodes and cValues are hash-consed: structurally identical ones are the same object. Identity is decided
 //     by an exact canonical encoding, never by a hash alone, so distinct structures can't be merged by accident.
 //   - All the chains are unioned together. A union of nodes is memoized on the set of nodes being unioned, so
-//     e.g. every geohash cell covered by the same set of subscriptions is computed once.
+//     e.g. every value shared by the same set of Patterns is computed once.
 //   - The result is materialized into fieldMatchers, valueMatchers, and faStates. String, number, and prefix
 //     values are built directly into a byte trie and each smallTable is packed exactly once; faStates are
 //     hash-consed too, so common suffixes are shared. Other value types are built with the same FA builders

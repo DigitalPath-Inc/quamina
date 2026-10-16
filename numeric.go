@@ -12,7 +12,7 @@ import (
 
 // A numeric pattern matches number-valued event fields that fall within a range:
 //
-//	{"risk": [{"numeric": [">=", 3]}]}
+//	{"score": [{"numeric": [">=", 3]}]}
 //	{"price": [{"numeric": [">", 0, "<=", 9.5]}]}
 //	{"count": [{"numeric": ["=", 100]}]}
 //

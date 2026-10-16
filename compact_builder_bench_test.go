@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-// Benchmarks for AddPatterns, using a workload shaped like geofenced alert subscriptions: each subscription
-// covers a circle of 10-60km somewhere in California with precision-5 geohash cells (compressed where all 32
-// children of a cell are present), plus weekly hour windows, either as a list of hours of the week or as
-// time-window values in the subscriber's time zone, and a minimum risk level.
+// Benchmarks for AddPatterns, using a geofencing workload: each subscription covers a circle of 10-60km
+// somewhere in California with precision-5 geohash cells (compressed where all 32 children of a cell are
+// present), plus weekly hour windows, either as a list of hours of the week or as time-window values in the
+// subscriber's time zone, and a minimum level.
 //
 // Run with e.g.
 //   go test -run '^$' -bench 'CompactBuild|CompactMatch|CompactIncremental|CompactMixed' -benchtime 1x
@@ -59,7 +59,7 @@ func geohashEncode(lat, lon float64, precision int) string {
 type subscription struct {
 	cells   []string
 	hours   []int
-	risks   []int
+	levels  []int
 	tz      string
 	windows []dayWindow
 }
@@ -108,8 +108,8 @@ func generateSubscriptions(n int, seed uint64) []subscription {
 		}
 		slices.Sort(subs[i].hours)
 
-		for risk := 1 + r.IntN(4); risk <= 6; risk++ {
-			subs[i].risks = append(subs[i].risks, risk)
+		for level := 1 + r.IntN(4); level <= 6; level++ {
+			subs[i].levels = append(subs[i].levels, level)
 		}
 	}
 	return subs
@@ -143,10 +143,10 @@ func compressGeohashes(cells map[string]bool) []string {
 type patternShape string
 
 const (
-	shapeGeohash patternShape = "geohash"           // {"geohash": [cells]}
-	shapeCross   patternShape = "geohash×hour×risk" // the shape used by the existing notifications rule evaluator
-	shapeTime    patternShape = "geohash×time-window×risk"
-	shapeNumeric patternShape = "geohash×time-window×numeric" // risk as {"numeric": [">=", minimum]}
+	shapeGeohash patternShape = "geohash"            // {"geohash": [cells]}
+	shapeCross   patternShape = "geohash×hour×level" // hours and levels as lists of values
+	shapeTime    patternShape = "geohash×time-window×level"
+	shapeNumeric patternShape = "geohash×time-window×numeric" // level as {"numeric": [">=", minimum]}
 )
 
 func subscriptionPatterns(subs []subscription, shape patternShape) []Pattern {
@@ -156,7 +156,7 @@ func subscriptionPatterns(subs []subscription, shape patternShape) []Pattern {
 		switch shape {
 		case shapeCross:
 			pattern["hour"] = s.hours
-			pattern["risk"] = s.risks
+			pattern["level"] = s.levels
 		case shapeTime, shapeNumeric:
 			var windows []any
 			for _, w := range s.windows {
@@ -168,9 +168,9 @@ func subscriptionPatterns(subs []subscription, shape patternShape) []Pattern {
 				}})
 			}
 			pattern["timestamp"] = windows
-			pattern["risk"] = s.risks
+			pattern["level"] = s.levels
 			if shape == shapeNumeric {
-				pattern["risk"] = []any{map[string]any{"numeric": []any{">=", s.risks[0]}}}
+				pattern["level"] = []any{map[string]any{"numeric": []any{">=", s.levels[0]}}}
 			}
 		}
 		j, _ := json.Marshal(pattern)
@@ -192,7 +192,7 @@ func generateEvents(n int, seed uint64) [][]byte {
 			prefixes[p] = gh[:p+1]
 		}
 		ts := weekStart.Add(time.Duration(tsRand.Int64N(int64(14 * 24 * time.Hour)))).UnixMilli()
-		j, _ := json.Marshal(map[string]any{"geohash": prefixes, "hour": r.IntN(168), "risk": 1 + r.IntN(6), "timestamp": ts})
+		j, _ := json.Marshal(map[string]any{"geohash": prefixes, "hour": r.IntN(168), "level": 1 + r.IntN(6), "timestamp": ts})
 		events[i] = j
 	}
 	return events
@@ -275,7 +275,7 @@ func reportBuild(b *testing.B, build func(testing.TB, []Pattern) *Quamina, patte
 }
 
 // sequentialLimit caps the sizes at which AddPattern is benchmarked: for the cross-product shape it allocates
-// roughly cells*hours*risks fieldMatchers per subscription and runs out of memory quickly.
+// roughly cells*hours*levels fieldMatchers per subscription and runs out of memory quickly.
 var sequentialLimit = map[patternShape]int{shapeGeohash: 5000, shapeCross: 100, shapeTime: 1000, shapeNumeric: 1000}
 
 func BenchmarkCompactBuild(b *testing.B) {
