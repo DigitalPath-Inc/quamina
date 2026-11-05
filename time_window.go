@@ -17,13 +17,14 @@ import (
 //	{"timestamp": [{"time-window": {"tz": "America/Los_Angeles", "days": ["mon", "fri"], "start": "08:00", "end": "17:00"}}]}
 //
 // "tz" is an IANA time zone name and is required. "days" lists the days on which the window starts and
-// defaults to every day. "start" is inclusive and "end" exclusive, both "HH:MM"; "end" may be "24:00", and
+// defaults to every day; a day is a name such as "mon" or "monday", or a crontab number from 0 to 7, where
+// both 0 and 7 are Sunday. "start" is inclusive and "end" exclusive, both "HH:MM"; "end" may be "24:00", and
 // an end at or before the start means the window runs past midnight into the following day.
 //
 // Event timestamps may be numbers, which are read as Unix epoch milliseconds, or RFC 3339 strings.
 //
-// Local times are encoded as the five-digit minute of the week, Monday 00:00 being 00000, so that each
-// window is a set of decimal prefixes and compiles into an ordinary deterministic automaton. There is one
+// Local times are encoded as the five-digit minute of the week, Sunday 00:00 being 00000 as in crontab, so
+// that each window is a set of decimal prefixes and compiles into an ordinary deterministic automaton. There is one
 // automaton per time zone, and matching converts the event time to each zone's wall-clock time, so
 // daylight-saving changes are handled exactly.
 
@@ -46,14 +47,15 @@ type tzMatcher struct {
 	start *faState
 }
 
+// weekdayNames numbers the days as crontab and time.Weekday do, Sunday being 0.
 var weekdayNames = map[string]int{
-	"mon": 0, "monday": 0,
-	"tue": 1, "tuesday": 1,
-	"wed": 2, "wednesday": 2,
-	"thu": 3, "thursday": 3,
-	"fri": 4, "friday": 4,
-	"sat": 5, "saturday": 5,
-	"sun": 6, "sunday": 6,
+	"sun": 0, "sunday": 0,
+	"mon": 1, "monday": 1,
+	"tue": 2, "tuesday": 2,
+	"wed": 3, "wednesday": 3,
+	"thu": 4, "thursday": 4,
+	"fri": 5, "friday": 5,
+	"sat": 6, "saturday": 6,
 }
 
 var locations sync.Map // map[string]*time.Location
@@ -160,13 +162,29 @@ func readDays(pb *patternBuild) ([]int, error) {
 			// has to be ]
 			return days, nil
 		}
-		name, ok := t.(string)
-		day, known := weekdayNames[strings.ToLower(name)]
-		if !ok || !known {
+		day, ok := parseDay(t)
+		if !ok {
 			return nil, fmt.Errorf("'time-window' day %v is not a day of the week", t)
 		}
 		days = append(days, day)
 	}
+}
+
+// parseDay reads a day as a name such as "mon" or "Monday", or as a crontab number from 0 to 7, where
+// both 0 and 7 are Sunday.
+func parseDay(t json.Token) (int, bool) {
+	switch v := t.(type) {
+	case string:
+		day, ok := weekdayNames[strings.ToLower(v)]
+		return day, ok
+	case json.Number:
+		day, err := strconv.Atoi(v.String())
+		if err != nil || day < 0 || day > 7 {
+			return 0, false
+		}
+		return day % 7, true
+	}
+	return 0, false
 }
 
 func parseClock(s string, allow24 bool) (int, error) {
@@ -388,7 +406,7 @@ func timeTransitions(tzs []tzMatcher, field *Field, transitions []*fieldMatcher,
 	for i := range tzs {
 		local := t.In(tzs[i].loc)
 		hour, minute, _ := local.Clock()
-		minuteOfWeek := ((int(local.Weekday())+6)%7)*minutesPerDay + hour*60 + minute
+		minuteOfWeek := int(local.Weekday())*minutesPerDay + hour*60 + minute
 		buf := bufs.timeBuf[:]
 		for d := weekDigits - 1; d >= 0; d-- {
 			buf[d] = byte('0' + minuteOfWeek%10)
