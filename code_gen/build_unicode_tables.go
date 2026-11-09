@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"quamina.net/go/quamina/v2"
+	"github.com/DigitalPath-Inc/quamina/v2"
 )
 
 const (
