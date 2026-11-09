@@ -12,7 +12,7 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"quamina.net/go/quamina/v2"
+	"github.com/DigitalPath-Inc/quamina/v2"
 )
 
 const oneMeg = 1024 * 1024
